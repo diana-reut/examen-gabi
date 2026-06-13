@@ -1,0 +1,244 @@
+:root {
+  --bg: #f4f0e6;
+  --paper: rgba(255, 255, 255, 0.94);
+  --ink: #0f2857;
+  --ink-soft: #536382;
+  --accent: #1c5fd1;
+  --border: rgba(15, 40, 87, 0.12);
+  --shadow: 0 10px 30px rgba(16, 36, 79, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Manrope", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(28, 95, 209, 0.12), transparent 28%),
+    linear-gradient(180deg, #fcfaf5 0%, var(--bg) 100%);
+}
+
+.page-shell {
+  width: min(1240px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.hero {
+  padding: 4px 0 20px;
+}
+
+.brand-lockup {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) 1fr;
+  gap: 18px;
+  align-items: center;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand-logo {
+  width: 100%;
+  max-width: 240px;
+  display: block;
+}
+
+.brand-copy h1,
+.section-heading h2,
+.article-title,
+.detail-title {
+  margin: 0;
+  font-family: "Cormorant Garamond", serif;
+}
+
+.brand-copy h1 {
+  font-size: clamp(1.8rem, 3.2vw, 2.9rem);
+  line-height: 1.02;
+}
+
+.eyebrow,
+.section-label,
+.meta-pill,
+.count-badge {
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.eyebrow,
+.section-label {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hero-text {
+  max-width: 58ch;
+  margin: 8px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.newspaper-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 28px;
+  margin-top: 18px;
+  align-items: start;
+}
+
+.articles-column {
+  position: sticky;
+  top: 18px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.section-heading h2 {
+  font-size: 2rem;
+}
+
+.stacked-article-list {
+  display: grid;
+  gap: 14px;
+}
+
+.article-card {
+  width: 100%;
+  text-align: left;
+  padding: 18px;
+  border-radius: 22px;
+  background: var(--paper);
+  border: 1px solid rgba(15, 40, 87, 0.08);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.article-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(28, 95, 209, 0.28);
+}
+
+.article-card.active {
+  background: linear-gradient(180deg, rgba(28, 95, 209, 0.09), rgba(255, 255, 255, 0.98));
+  border-color: rgba(28, 95, 209, 0.3);
+}
+
+.article-title {
+  font-size: 1.75rem;
+  line-height: 1;
+  margin-top: 12px;
+}
+
+.article-summary,
+.detail-summary,
+.detail-content,
+.detail-placeholder,
+.detail-meta {
+  color: var(--ink-soft);
+}
+
+.article-summary {
+  margin: 12px 0 14px;
+  font-size: 0.94rem;
+  line-height: 1.6;
+}
+
+.card-meta,
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 0.88rem;
+}
+
+.meta-pill,
+.count-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(15, 40, 87, 0.06);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.count-badge {
+  background: rgba(28, 95, 209, 0.1);
+  white-space: nowrap;
+}
+
+.detail-page {
+  min-height: 70vh;
+  padding: 4px 0 0;
+}
+
+.detail-title {
+  font-size: clamp(2.8rem, 5vw, 4.6rem);
+  line-height: 0.95;
+  margin: 12px 0 10px;
+}
+
+.detail-summary {
+  font-size: 1.08rem;
+  line-height: 1.75;
+  margin: 18px 0 24px;
+}
+
+.detail-content {
+  white-space: pre-wrap;
+  line-height: 1.9;
+  font-size: 1rem;
+}
+
+.detail-placeholder {
+  text-align: center;
+  font-size: 1rem;
+}
+
+@media (max-width: 980px) {
+  .newspaper-layout,
+  .brand-lockup {
+    grid-template-columns: 1fr;
+  }
+
+  .articles-column {
+    position: static;
+  }
+
+  .brand-logo {
+    max-width: 260px;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-shell {
+    width: min(100% - 20px, 100%);
+    padding-top: 10px;
+  }
+
+  .section-heading {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .article-card {
+    border-radius: 18px;
+  }
+
+  .detail-title {
+    font-size: clamp(2.2rem, 10vw, 3rem);
+  }
+}
