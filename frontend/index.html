@@ -36,12 +36,12 @@
           <div class="field-row">
             <label>
               Username
-              <input id="usernameInput" name="username" type="text" required>
+              <input id="usernameInput" name="username" type="text" maxlength="100" required>
             </label>
 
             <label>
               Password
-              <input id="passwordInput" name="password" type="password" required>
+              <input id="passwordInput" name="password" type="password" maxlength="200" required>
             </label>
           </div>
 
@@ -70,6 +70,11 @@
             <div><strong>Journalist</strong><span>journalist3 / journalist323</span></div>
             <div><strong>Journalist</strong><span>journalist4 / journalist423</span></div>
             <div><strong>User</strong><span>user / user123</span></div>
+            <div><strong>User</strong><span>user2 / user223</span></div>
+            <div><strong>User</strong><span>user3 / user323</span></div>
+            <div><strong>User</strong><span>user4 / user423</span></div>
+            <div><strong>User</strong><span>user5 / user523</span></div>
+            <div><strong>User</strong><span>user6 / user623</span></div>
           </div>
         </div>
       </div>
@@ -93,12 +98,23 @@
 
       <section class="detail-column">
         <div class="detail-actions">
+          <button id="statisticsBtn" class="secondary-button hidden" type="button">See statistics</button>
           <button id="deleteArticleBtn" class="danger-button hidden" type="button">Delete article</button>
         </div>
 
         <article id="articleDetail" class="detail-page">
           <p class="detail-placeholder">Log in to load articles.</p>
         </article>
+
+        <section id="statisticsShell" class="editor-shell hidden">
+          <div class="section-heading editor-heading">
+            <div>
+              <p class="section-label">Admin</p>
+              <h2>Article statistics</h2>
+            </div>
+          </div>
+          <div id="statisticsContent"></div>
+        </section>
 
         <section id="articleMetaShell" class="editor-shell hidden">
           <div class="section-heading editor-heading">
@@ -111,13 +127,13 @@
           <form id="articleMetaForm" class="article-form">
             <label>
               Title
-              <input id="articleTitleInput" name="title" type="text" required>
+              <input id="articleTitleInput" name="title" type="text" maxlength="140" required>
             </label>
 
             <div class="field-row">
               <label>
                 Category
-                <input id="articleCategoryInput" name="category" type="text">
+                <input id="articleCategoryInput" name="category" type="text" maxlength="60">
               </label>
 
               <label>
@@ -128,12 +144,12 @@
 
             <label>
               Author
-              <input id="articleAuthorInput" name="author" type="text">
+                <input id="articleAuthorInput" name="author" type="text" maxlength="100">
             </label>
 
             <label>
               Summary
-              <textarea id="articleSummaryInput" name="summary" rows="3"></textarea>
+              <textarea id="articleSummaryInput" name="summary" rows="3" maxlength="600"></textarea>
             </label>
 
             <div class="field-row">
@@ -170,7 +186,7 @@
 
             <label>
               Paragraph text
-              <textarea id="paragraphTextInput" name="text" rows="8" required></textarea>
+              <textarea id="paragraphTextInput" name="text" rows="8" maxlength="12000" required></textarea>
             </label>
 
             <label>
@@ -190,6 +206,7 @@
     </main>
   </div>
 
+  <script src="/shared/validation.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

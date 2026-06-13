@@ -13,6 +13,9 @@ const articleCounter = document.getElementById("articleCount");
 const feedbackBanner = document.getElementById("feedbackBanner");
 const deleteArticleBtn = document.getElementById("deleteArticleBtn");
 const createArticleShortcutBtn = document.getElementById("createArticleShortcutBtn");
+const statisticsBtn = document.getElementById("statisticsBtn");
+const statisticsShell = document.getElementById("statisticsShell");
+const statisticsContent = document.getElementById("statisticsContent");
 
 const articleMetaShell = document.getElementById("articleMetaShell");
 const articleMetaHeading = document.getElementById("articleMetaHeading");
@@ -21,6 +24,7 @@ const paragraphShell = document.getElementById("paragraphShell");
 const paragraphForm = document.getElementById("paragraphForm");
 const paragraphSubmitBtn = document.getElementById("paragraphSubmitBtn");
 const paragraphCancelBtn = document.getElementById("paragraphCancelBtn");
+const validation = window.TeoriaValidation;
 
 const articleFields = {
   title: document.getElementById("articleTitleInput"),
@@ -54,6 +58,7 @@ let journalists = [];
 let selectedArticleId = null;
 let paragraphDraftImages = [];
 let draggedParagraphId = null;
+let statisticsVisible = false;
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
@@ -98,6 +103,10 @@ function formatDate(value) {
 function showFeedback(message) {
   feedbackBanner.textContent = message;
   feedbackBanner.classList.remove("hidden");
+}
+
+function getValidationMessage(result) {
+  return result?.errors?.[0] || "";
 }
 
 function clearFeedback() {
@@ -147,11 +156,11 @@ function populateJournalistSelect(selectElement, selectedIds = []) {
 
 function describeRole() {
   if (!currentUser) {
-    return "";
+    return "Guests can browse finished articles and see like/dislike totals, but they cannot react until they log in.";
   }
 
   if (currentUser.role === "Admin") {
-    return "Admins can manage article metadata, paragraphs, images, comments, and deletion.";
+    return "Admins can manage article metadata, paragraphs, images, comments, deletion, and article statistics.";
   }
 
   if (currentUser.role === "Editor") {
@@ -162,7 +171,7 @@ function describeRole() {
     return "Journalists only see articles assigned to them and can add or edit paragraphs plus upload images for those articles.";
   }
 
-  return "Readers only see finished articles.";
+  return "Readers only see finished articles and can like or dislike them.";
 }
 
 function setAuthenticatedState(user, permissions) {
@@ -183,6 +192,11 @@ function resetForms() {
   articleFields.date.value = new Date().toISOString().slice(0, 10);
   articleFields.status.value = "draft";
   articleFields.status.querySelector("option[value='finished']").disabled = false;
+  articleFields.title.maxLength = validation.limits.title;
+  articleFields.category.maxLength = validation.limits.category;
+  articleFields.author.maxLength = validation.limits.author;
+  articleFields.summary.maxLength = validation.limits.summary;
+  paragraphFields.text.maxLength = validation.limits.paragraph;
   paragraphFields.id.value = "";
   paragraphDraftImages = [];
   renderExistingImages([]);
@@ -199,16 +213,19 @@ function resetAuthenticatedState() {
   journalists = [];
   articles = [];
   selectedArticleId = null;
+  statisticsVisible = false;
   userPanel.classList.add("hidden");
   logoutBtn.classList.add("hidden");
   loginForm.classList.remove("hidden");
   articleList.innerHTML = "";
   articleCounter.textContent = "0 articles";
-  articleDetail.innerHTML = '<p class="detail-placeholder">Log in to load articles.</p>';
+  articleDetail.innerHTML = '<p class="detail-placeholder">Browse published articles or log in for more actions.</p>';
   articleMetaShell.classList.add("hidden");
   paragraphShell.classList.add("hidden");
+  statisticsShell.classList.add("hidden");
   deleteArticleBtn.classList.add("hidden");
   createArticleShortcutBtn.classList.add("hidden");
+  statisticsBtn.classList.add("hidden");
   setRoleTheme(null);
   resetForms();
 }
@@ -221,13 +238,22 @@ function applyPermissions() {
   const canDeleteArticle = Boolean(currentPermissions?.canDeleteArticle);
 
   const canManageSelected = canManageSelectedArticle(article);
-  const canWriteSelected = article && (currentUser.role === "Admin" || article.assignedJournalistIds.includes(currentUser.id));
+  const canWriteSelected = Boolean(article && currentUser && (currentUser.role === "Admin" || article.assignedJournalistIds.includes(currentUser.id)));
 
   createArticleShortcutBtn.classList.toggle("hidden", !canCreateArticle);
   articleMetaShell.classList.toggle("hidden", !(canCreateArticle || (canManageArticle && canManageSelected)));
   paragraphShell.classList.toggle("hidden", !(canWriteParagraphs && canWriteSelected));
   deleteArticleBtn.classList.toggle("hidden", !canDeleteArticle);
   deleteArticleBtn.disabled = !canDeleteArticle || !article;
+  statisticsBtn.classList.toggle("hidden", currentUser?.role !== "Admin");
+  statisticsShell.classList.toggle("hidden", !(currentUser?.role === "Admin" && statisticsVisible));
+}
+
+async function enterGuestMode() {
+  resetAuthenticatedState();
+  permissionSummary.textContent = describeRole();
+  await loadArticles();
+  clearFeedback();
 }
 
 async function loadJournalistsIfNeeded() {
@@ -333,6 +359,114 @@ function countUnresolvedComments(article) {
   );
 }
 
+function renderReactionSummary(article) {
+  const isUser = currentUser?.role === "User";
+  const canReact = isUser && article.status === "finished";
+
+  return `
+    <div class="reaction-strip">
+      <div class="reaction-counts">
+        <span class="reaction-pill like">Likes: ${article.likes ?? 0}</span>
+        <span class="reaction-pill dislike">Dislikes: ${article.dislikes ?? 0}</span>
+      </div>
+      ${
+        canReact
+          ? `
+            <div class="reaction-actions">
+              <button class="secondary-button${article.userReaction === "like" ? " active-reaction" : ""}" type="button" data-action="react" data-reaction="like">Like</button>
+              <button class="secondary-button${article.userReaction === "dislike" ? " active-reaction" : ""}" type="button" data-action="react" data-reaction="dislike">Dislike</button>
+              ${
+                article.userReaction !== "none"
+                  ? '<button class="ghost-button" type="button" data-action="react" data-reaction="none">Clear reaction</button>'
+                  : ""
+              }
+            </div>
+          `
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderStatistics(statistics) {
+  if (!statistics) {
+    statisticsContent.innerHTML = "";
+    return;
+  }
+
+  const renderBar = (likes, dislikes) => {
+    const total = likes + dislikes;
+    const likeWidth = total ? (likes / total) * 100 : 0;
+    const dislikeWidth = total ? (dislikes / total) * 100 : 0;
+
+    return `
+      <div class="stats-bar" aria-hidden="true">
+        <div class="stats-bar-like" style="width:${likeWidth}%"></div>
+        <div class="stats-bar-dislike" style="width:${dislikeWidth}%"></div>
+      </div>
+    `;
+  };
+
+  const renderRows = (items) =>
+    items.length
+      ? items
+          .map(
+            (item) => `
+              <div class="stats-row">
+                <div>
+                  <strong>${item.title || "Untitled article"}</strong>
+                  <div class="stats-subline">${item.category || "Uncategorized"} · ${item.status}</div>
+                  ${renderBar(item.likes, item.dislikes)}
+                </div>
+                <div class="stats-metrics">
+                  <span>Likes: ${item.likes}</span>
+                  <span>Dislikes: ${item.dislikes}</span>
+                  <span>${item.approvalScore}% positive</span>
+                </div>
+              </div>
+            `,
+          )
+          .join("")
+      : '<p class="empty-inline">No statistics available yet.</p>';
+
+  statisticsContent.innerHTML = `
+    <div class="stats-grid">
+      <div class="stats-card">
+        <h3>Finished articles only</h3>
+        <p><strong>${statistics.totals.finishedArticles}</strong> published article${statistics.totals.finishedArticles === 1 ? "" : "s"}</p>
+        ${renderBar(statistics.totals.likes, statistics.totals.dislikes)}
+        <p><strong>${statistics.totals.totalReactions}</strong> total reactions</p>
+        <p>Likes: ${statistics.totals.likes}</p>
+        <p>Dislikes: ${statistics.totals.dislikes}</p>
+      </div>
+      <div class="stats-card">
+        <h3>Reaction split</h3>
+        <div class="stats-legend">
+          <span class="stats-legend-item"><span class="stats-swatch like"></span>Likes</span>
+          <span class="stats-legend-item"><span class="stats-swatch dislike"></span>Dislikes</span>
+        </div>
+        <div class="stats-donut-shell">
+          <div class="stats-donut" style="--like-share:${statistics.totals.totalReactions ? (statistics.totals.likes / statistics.totals.totalReactions) * 360 : 0}deg;">
+            <div class="stats-donut-center">${statistics.totals.totalReactions || 0}</div>
+          </div>
+        </div>
+      </div>
+      <div class="stats-card">
+        <h3>Most liked</h3>
+        ${renderRows(statistics.mostLiked)}
+      </div>
+      <div class="stats-card">
+        <h3>Most disliked</h3>
+        ${renderRows(statistics.mostDisliked)}
+      </div>
+      <div class="stats-card stats-card-wide">
+        <h3>All finished articles</h3>
+        ${renderRows(statistics.articles)}
+      </div>
+    </div>
+  `;
+}
+
 function renderParagraphCommentForm(paragraph) {
   if (!(currentUser && (currentUser.role === "Admin" || currentUser.role === "Editor"))) {
     return "";
@@ -345,7 +479,7 @@ function renderParagraphCommentForm(paragraph) {
 
   return `
     <form class="comment-form" data-paragraph-id="${paragraph.id}">
-      <textarea name="commentText" rows="3" placeholder="Leave a comment for this paragraph..."></textarea>
+      <textarea name="commentText" rows="3" maxlength="${validation.limits.comment}" placeholder="Leave a comment for this paragraph..."></textarea>
       <button class="secondary-button" type="submit">Add comment</button>
     </form>
   `;
@@ -399,7 +533,7 @@ function renderDetail(article) {
 
   const unresolvedComments = countUnresolvedComments(article);
   const canManageCurrent = canManageSelectedArticle(article);
-  const shouldHideCommentsFromReader = currentUser?.role === "User" && article.status === "finished";
+  const shouldHideCommentsFromReader = (!currentUser || currentUser.role === "User") && article.status === "finished";
 
   const paragraphsHtml = article.paragraphs.length
     ? article.paragraphs
@@ -460,6 +594,7 @@ function renderDetail(article) {
       <span><strong>Date:</strong> ${formatDate(article.date)}</span>
       <span><strong>Created by:</strong> ${article.createdByName || "Unknown"}</span>
     </div>
+    ${renderReactionSummary(article)}
     <p class="detail-assignees"><strong>Assigned journalists:</strong> ${article.assignedJournalists.map((entry) => entry.displayName).join(", ") || "No assignments yet"}</p>
     <p class="detail-assignees"><strong>Finished by:</strong> ${article.finishedByEditorName || "Not finished yet"}</p>
     <p class="detail-summary">${article.summary || "No summary added yet."}</p>
@@ -563,9 +698,10 @@ function attachDetailInteractions() {
         return;
       }
 
-      const commentText = String(form.querySelector("textarea").value || "").trim();
-      if (!commentText) {
-        showFeedback("Comment text is required.");
+      const commentText = validation.normalizeString(form.querySelector("textarea").value);
+      const commentError = getValidationMessage(validation.validateCommentPayload({ text: commentText }));
+      if (commentError) {
+        showFeedback(commentError);
         return;
       }
 
@@ -603,6 +739,26 @@ function attachDetailInteractions() {
       }
     });
   });
+
+  articleDetail.querySelectorAll("[data-action='react']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const article = getSelectedArticle();
+      if (!article) {
+        return;
+      }
+
+      try {
+        await apiRequest(`/api/articles/${article.id}/reaction`, {
+          method: "PATCH",
+          body: JSON.stringify({ reaction: button.dataset.reaction }),
+        });
+        await loadArticles(article.id);
+        showFeedback("Reaction updated.");
+      } catch (error) {
+        showFeedback(error.message);
+      }
+    });
+  });
 }
 
 function renderList() {
@@ -629,7 +785,7 @@ function renderList() {
         <span>${article.author || "No author"}</span>
         <span>${formatDate(article.date)}</span>
       </div>
-      <div class="article-meta-inline">Paragraphs: ${article.paragraphs.length}</div>
+      <div class="article-meta-inline">Paragraphs: ${article.paragraphs.length} · Likes: ${article.likes ?? 0} · Dislikes: ${article.dislikes ?? 0}</div>
     `;
 
     button.addEventListener("click", async () => {
@@ -651,6 +807,33 @@ function renderList() {
 
     articleList.appendChild(button);
   });
+}
+
+async function toggleStatistics() {
+  if (currentUser?.role !== "Admin") {
+    return;
+  }
+
+  statisticsVisible = !statisticsVisible;
+  if (!statisticsVisible) {
+    statisticsShell.classList.add("hidden");
+    statisticsContent.innerHTML = "";
+    statisticsBtn.textContent = "See statistics";
+    return;
+  }
+
+  try {
+    const statistics = await apiRequest("/api/statistics/articles");
+    renderStatistics(statistics);
+    statisticsShell.classList.remove("hidden");
+    statisticsBtn.textContent = "Hide statistics";
+    statisticsShell.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    statisticsVisible = false;
+    statisticsShell.classList.add("hidden");
+    statisticsBtn.textContent = "See statistics";
+    showFeedback(error.message);
+  }
 }
 
 async function loadArticles(preferredArticleId = null) {
@@ -708,7 +891,7 @@ async function loadJournalistsIfNeeded() {
 
 async function restoreSession() {
   if (!authToken) {
-    resetAuthenticatedState();
+    await enterGuestMode();
     return;
   }
 
@@ -720,12 +903,23 @@ async function restoreSession() {
     await loadArticles();
     clearFeedback();
   } catch {
-    resetAuthenticatedState();
+    await enterGuestMode();
   }
 }
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+
+  const loginError = getValidationMessage(
+    validation.validateLoginPayload({
+      username: usernameInput.value,
+      password: passwordInput.value,
+    }),
+  );
+  if (loginError) {
+    showFeedback(loginError);
+    return;
+  }
 
   try {
     const payload = await apiRequest("/api/auth/login", {
@@ -749,9 +943,13 @@ loginForm.addEventListener("submit", async (event) => {
   }
 });
 
-logoutBtn.addEventListener("click", () => {
-  resetAuthenticatedState();
+logoutBtn.addEventListener("click", async () => {
+  await enterGuestMode();
   clearFeedback();
+});
+
+statisticsBtn.addEventListener("click", async () => {
+  await toggleStatistics();
 });
 
 createArticleShortcutBtn.addEventListener("click", () => {
@@ -788,14 +986,22 @@ articleMetaForm.addEventListener("submit", async (event) => {
 
   const selectedIds = getSelectedValues(articleFields.assignedJournalistIds);
   const payload = {
-    title: articleFields.title.value.trim(),
-    category: articleFields.category.value.trim(),
-    author: articleFields.author.value.trim(),
+    title: validation.normalizeString(articleFields.title.value),
+    category: validation.normalizeString(articleFields.category.value),
+    author: validation.normalizeString(articleFields.author.value),
     date: articleFields.date.value,
-    summary: articleFields.summary.value.trim(),
+    summary: validation.normalizeString(articleFields.summary.value),
     assignedJournalistIds: selectedIds,
     status: articleFields.status.value,
   };
+
+  const articleError = getValidationMessage(
+    selectedArticleId ? validation.validateArticleManagePayload(payload) : validation.validateArticleCreatePayload(payload),
+  );
+  if (articleError) {
+    showFeedback(articleError);
+    return;
+  }
 
   try {
     let article;
@@ -837,9 +1043,14 @@ paragraphForm.addEventListener("submit", async (event) => {
   try {
     const uploadedImages = await uploadParagraphImages(article.id);
     const payload = {
-      text: paragraphFields.text.value.trim(),
+      text: validation.normalizeString(paragraphFields.text.value),
       images: [...getKeptExistingImages(), ...uploadedImages],
     };
+    const paragraphError = getValidationMessage(validation.validateParagraphPayload(payload));
+    if (paragraphError) {
+      showFeedback(paragraphError);
+      return;
+    }
 
     if (paragraphFields.id.value) {
       await apiRequest(`/api/articles/${article.id}/paragraphs/${paragraphFields.id.value}`, {

@@ -8,6 +8,7 @@ const multer = require("multer");
 const { v2: cloudinary } = require("cloudinary");
 const { Pool } = require("pg");
 const { faker } = require("@faker-js/faker");
+const validation = require("./shared/validation");
 require("dotenv").config();
 
 faker.seed(20260613);
@@ -102,6 +103,11 @@ const seededUsers = [
   { username: "journalist3", password: "journalist323", role: "Journalist", displayName: "Victor Journalist" },
   { username: "journalist4", password: "journalist423", role: "Journalist", displayName: "Teo Journalist" },
   { username: "user", password: "user123", role: "User", displayName: "Reader User" },
+  { username: "user2", password: "user223", role: "User", displayName: "Bianca Reader" },
+  { username: "user3", password: "user323", role: "User", displayName: "Radu Reader" },
+  { username: "user4", password: "user423", role: "User", displayName: "Ioana Reader" },
+  { username: "user5", password: "user523", role: "User", displayName: "Matei Reader" },
+  { username: "user6", password: "user623", role: "User", displayName: "Daria Reader" },
 ];
 
 const imageSchema = new mongoose.Schema(
@@ -152,6 +158,8 @@ const articleSchema = new mongoose.Schema(
     summary: { type: String, default: "", trim: true },
     assignedJournalistIds: { type: [String], default: [] },
     status: { type: String, enum: ["draft", "finished"], default: "draft" },
+    likedByUserIds: { type: [String], default: [] },
+    dislikedByUserIds: { type: [String], default: [] },
     paragraphs: { type: [paragraphSchema], default: [] },
     createdByUserId: { type: String, default: "" },
     createdByName: { type: String, default: "" },
@@ -213,10 +221,20 @@ function serializeParagraph(paragraph) {
   };
 }
 
-function serializeArticleDocument(article, userDirectory = new Map()) {
+function serializeArticleDocument(article, userDirectory = new Map(), viewer = null) {
   const assignedJournalists = (article.assignedJournalistIds || [])
     .map((id) => userDirectory.get(String(id)))
     .filter(Boolean);
+  const likedByUserIds = (article.likedByUserIds || []).map((id) => String(id));
+  const dislikedByUserIds = (article.dislikedByUserIds || []).map((id) => String(id));
+  const viewerId = viewer ? String(viewer.sub) : "";
+  const userReaction = viewerId
+    ? likedByUserIds.includes(viewerId)
+      ? "like"
+      : dislikedByUserIds.includes(viewerId)
+        ? "dislike"
+        : "none"
+    : "none";
 
   return {
     id: article._id.toString(),
@@ -226,6 +244,9 @@ function serializeArticleDocument(article, userDirectory = new Map()) {
     date: new Date(article.date).toISOString().slice(0, 10),
     summary: article.summary,
     status: article.status,
+    likes: likedByUserIds.length,
+    dislikes: dislikedByUserIds.length,
+    userReaction,
     assignedJournalistIds: article.assignedJournalistIds || [],
     assignedJournalists,
     createdByUserId: article.createdByUserId,
@@ -247,22 +268,22 @@ function normalizeAssignedJournalistIds(value) {
 
 function normalizeArticleCreatePayload(body) {
   return {
-    title: String(body.title || "").trim(),
-    category: String(body.category || "").trim(),
-    author: String(body.author || "").trim(),
-    date: String(body.date || "").trim() || new Date().toISOString().slice(0, 10),
-    summary: String(body.summary || "").trim(),
+    title: validation.normalizeString(body.title),
+    category: validation.normalizeString(body.category),
+    author: validation.normalizeString(body.author),
+    date: validation.normalizeString(body.date) || new Date().toISOString().slice(0, 10),
+    summary: validation.normalizeString(body.summary),
     assignedJournalistIds: normalizeAssignedJournalistIds(body.assignedJournalistIds),
   };
 }
 
 function normalizeArticleManagePayload(body) {
   return {
-    title: String(body.title || "").trim(),
-    category: String(body.category || "").trim(),
-    author: String(body.author || "").trim(),
-    date: String(body.date || "").trim(),
-    summary: String(body.summary || "").trim(),
+    title: validation.normalizeString(body.title),
+    category: validation.normalizeString(body.category),
+    author: validation.normalizeString(body.author),
+    date: validation.normalizeString(body.date),
+    summary: validation.normalizeString(body.summary),
     assignedJournalistIds: normalizeAssignedJournalistIds(body.assignedJournalistIds),
     status: body.status === "finished" ? "finished" : "draft",
   };
@@ -270,7 +291,7 @@ function normalizeArticleManagePayload(body) {
 
 function normalizeParagraphPayload(body) {
   return {
-    text: String(body.text || "").trim(),
+    text: validation.normalizeString(body.text),
     images: Array.isArray(body.images)
       ? body.images
           .map((image) => ({
@@ -285,43 +306,15 @@ function normalizeParagraphPayload(body) {
 }
 
 function validateArticleCreatePayload(payload) {
-  if (!payload.title) {
-    return 'Field "title" is required.';
-  }
-
-  if (Number.isNaN(new Date(payload.date).getTime())) {
-    return 'Field "date" must be a valid date.';
-  }
-
-  if (payload.assignedJournalistIds.length < 1 || payload.assignedJournalistIds.length > 2) {
-    return "Each article must be assigned to one or two journalists.";
-  }
-
-  return null;
+  return validation.firstError(validation.validateArticleCreatePayload(payload));
 }
 
 function validateArticleManagePayload(payload) {
-  if (!payload.title) {
-    return 'Field "title" is required.';
-  }
-
-  if (!payload.date || Number.isNaN(new Date(payload.date).getTime())) {
-    return 'Field "date" must be a valid date.';
-  }
-
-  if (payload.assignedJournalistIds.length < 1 || payload.assignedJournalistIds.length > 2) {
-    return "An editor must assign one or two journalists.";
-  }
-
-  return null;
+  return validation.firstError(validation.validateArticleManagePayload(payload));
 }
 
 function validateParagraphPayload(payload) {
-  if (!payload.text) {
-    return 'Field "text" is required.';
-  }
-
-  return null;
+  return validation.firstError(validation.validateParagraphPayload(payload));
 }
 
 function validateFinishedArticle(article) {
@@ -365,6 +358,24 @@ function authenticateRequest(req, res, next) {
   }
 }
 
+function authenticateRequestIfPresent(req, res, next) {
+  const authorization = req.headers.authorization || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+
+  if (!token) {
+    req.user = null;
+    next();
+    return;
+  }
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ message: "Invalid or expired token." });
+  }
+}
+
 function requireCapability(capability) {
   return (req, res, next) => {
     const permissions = serializePermissions(req.user.role);
@@ -379,6 +390,10 @@ function requireCapability(capability) {
 }
 
 function buildArticleVisibilityFilter(user) {
+  if (!user) {
+    return { status: "finished" };
+  }
+
   if (user.role === "Editor") {
     return { createdByUserId: String(user.sub) };
   }
@@ -411,6 +426,10 @@ function canWriteParagraphs(article, user) {
 }
 
 function canViewArticle(article, user) {
+  if (!user) {
+    return article.status === "finished";
+  }
+
   if (user.role === "Admin") {
     return true;
   }
@@ -508,6 +527,47 @@ async function serializeArticlesWithAssignments(articles) {
   return articles.map((article) => serializeArticleDocument(article, directory));
 }
 
+function buildArticleStatistics(articles) {
+  const finishedArticles = articles.filter((article) => article.status === "finished");
+
+  const items = finishedArticles.map((article) => {
+    const likes = (article.likedByUserIds || []).length;
+    const dislikes = (article.dislikedByUserIds || []).length;
+    const totalReactions = likes + dislikes;
+
+    return {
+      id: article._id.toString(),
+      title: article.title,
+      status: article.status,
+      category: article.category,
+      likes,
+      dislikes,
+      totalReactions,
+      approvalScore: totalReactions ? Number(((likes / totalReactions) * 100).toFixed(1)) : 0,
+    };
+  });
+
+  const totals = items.reduce(
+    (accumulator, item) => {
+      accumulator.likes += item.likes;
+      accumulator.dislikes += item.dislikes;
+      accumulator.totalReactions += item.totalReactions;
+      return accumulator;
+    },
+    { likes: 0, dislikes: 0, totalReactions: 0 },
+  );
+
+  return {
+    totals: {
+      ...totals,
+      finishedArticles: items.length,
+    },
+    mostLiked: [...items].sort((left, right) => right.likes - left.likes || right.totalReactions - left.totalReactions).slice(0, 5),
+    mostDisliked: [...items].sort((left, right) => right.dislikes - left.dislikes || right.totalReactions - left.totalReactions).slice(0, 5),
+    articles: [...items].sort((left, right) => right.totalReactions - left.totalReactions || right.likes - left.likes),
+  };
+}
+
 async function ensureSeedArticles() {
   const existingArticles = await Article.countDocuments();
   if (existingArticles > 0) {
@@ -579,6 +639,16 @@ async function ensureArticleStructureDefaults() {
     if (!article.assignedJournalistIds || !article.assignedJournalistIds.length) {
       const assigned = faker.helpers.arrayElements(fallbackJournalists, faker.number.int({ min: 1, max: 2 }));
       article.assignedJournalistIds = assigned.map((entry) => entry.id);
+      changed = true;
+    }
+
+    if (!Array.isArray(article.likedByUserIds)) {
+      article.likedByUserIds = [];
+      changed = true;
+    }
+
+    if (!Array.isArray(article.dislikedByUserIds)) {
+      article.dislikedByUserIds = [];
       changed = true;
     }
 
@@ -679,11 +749,12 @@ function createApp() {
   });
 
   app.post("/api/auth/login", async (req, res) => {
-    const username = String(req.body.username || "").trim();
+    const username = validation.normalizeString(req.body.username);
     const password = String(req.body.password || "");
+    const loginValidationError = validation.firstError(validation.validateLoginPayload({ username, password }));
 
-    if (!username || !password) {
-      res.status(400).json({ message: "Username and password are required." });
+    if (loginValidationError) {
+      res.status(400).json({ message: loginValidationError });
       return;
     }
 
@@ -730,15 +801,33 @@ function createApp() {
     res.json(await getUsersByRole("Journalist"));
   });
 
-  app.get("/api/articles", authenticateRequest, async (req, res) => {
+  app.get("/api/statistics/articles", authenticateRequest, async (req, res) => {
+    if (req.user.role !== "Admin") {
+      res.status(403).json({ message: "Only admins can see article statistics." });
+      return;
+    }
+
+    const articles = await Article.find().sort({ date: -1, createdAt: -1 }).lean();
+    res.json(buildArticleStatistics(articles));
+  });
+
+  app.get("/api/articles", authenticateRequestIfPresent, async (req, res) => {
     const articles = await Article.find(buildArticleVisibilityFilter(req.user))
       .sort({ date: -1, createdAt: -1 })
       .lean();
+    const userIds = new Set();
 
-    res.json(await serializeArticlesWithAssignments(articles));
+    for (const article of articles) {
+      for (const id of article.assignedJournalistIds || []) {
+        userIds.add(String(id));
+      }
+    }
+
+    const directory = await getUserDirectoryByIds([...userIds]);
+    res.json(articles.map((article) => serializeArticleDocument(article, directory, req.user)));
   });
 
-  app.get("/api/articles/:id", authenticateRequest, async (req, res) => {
+  app.get("/api/articles/:id", authenticateRequestIfPresent, async (req, res) => {
     const article = await Article.findById(req.params.id).lean();
 
     if (!article) {
@@ -752,7 +841,47 @@ function createApp() {
     }
 
     const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
-    res.json(serializeArticleDocument(article, directory));
+    res.json(serializeArticleDocument(article, directory, req.user));
+  });
+
+  app.patch("/api/articles/:id/reaction", authenticateRequest, async (req, res) => {
+    if (req.user.role !== "User") {
+      res.status(403).json({ message: "Only users can like or dislike articles." });
+      return;
+    }
+
+    const article = await Article.findById(req.params.id);
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canViewArticle(article, req.user) || article.status !== "finished") {
+      res.status(403).json({ message: "You can only react to finished articles that you can view." });
+      return;
+    }
+
+    const reaction = req.body.reaction;
+    const reactionValidationError = validation.firstError(validation.validateReactionPayload({ reaction }));
+    if (reactionValidationError) {
+      res.status(400).json({ message: reactionValidationError });
+      return;
+    }
+
+    const userId = String(req.user.sub);
+    article.likedByUserIds = (article.likedByUserIds || []).map((id) => String(id)).filter((id) => id !== userId);
+    article.dislikedByUserIds = (article.dislikedByUserIds || []).map((id) => String(id)).filter((id) => id !== userId);
+
+    if (reaction === "like") {
+      article.likedByUserIds.push(userId);
+    } else if (reaction === "dislike") {
+      article.dislikedByUserIds.push(userId);
+    }
+
+    await article.save();
+
+    const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
+    res.json(serializeArticleDocument(article, directory, req.user));
   });
 
   app.post("/api/articles", authenticateRequest, requireCapability("canCreateArticle"), async (req, res) => {
@@ -1049,9 +1178,10 @@ function createApp() {
       return;
     }
 
-    const text = String(req.body.text || "").trim();
-    if (!text) {
-      res.status(400).json({ message: 'Field "text" is required.' });
+    const text = validation.normalizeString(req.body.text);
+    const commentValidationError = validation.firstError(validation.validateCommentPayload({ text }));
+    if (commentValidationError) {
+      res.status(400).json({ message: commentValidationError });
       return;
     }
 
@@ -1153,6 +1283,7 @@ function createApp() {
     res.json({ id: req.params.commentId });
   });
 
+  app.use("/shared", express.static(path.join(__dirname, "shared")));
   app.use(express.static(path.join(__dirname, "frontend")));
   app.use((_req, res) => {
     res.sendFile(path.join(__dirname, "frontend", "index.html"));
@@ -1205,8 +1336,23 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
-  console.error("Failed to start server.");
-  console.error(error);
-  process.exit(1);
-});
+module.exports = {
+  createApp,
+  startServer,
+  Article,
+  postgresPool,
+  seededUsers,
+  buildArticleStatistics,
+  validateArticleCreatePayload,
+  validateArticleManagePayload,
+  validateParagraphPayload,
+  validateFinishedArticle,
+};
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error("Failed to start server.");
+    console.error(error);
+    process.exit(1);
+  });
+}
