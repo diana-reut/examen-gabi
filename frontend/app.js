@@ -53,6 +53,7 @@ let articles = [];
 let journalists = [];
 let selectedArticleId = null;
 let paragraphDraftImages = [];
+let draggedParagraphId = null;
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
@@ -116,6 +117,14 @@ function getSelectedArticle() {
   return articles.find((article) => article.id === selectedArticleId) ?? null;
 }
 
+function canManageSelectedArticle(article = getSelectedArticle()) {
+  if (!article || !currentUser) {
+    return false;
+  }
+
+  return currentUser.role === "Admin" || article.createdByUserId === currentUser.id;
+}
+
 function getSelectedValues(selectElement) {
   return Array.from(selectElement.selectedOptions).map((option) => option.value);
 }
@@ -173,6 +182,7 @@ function resetForms() {
   paragraphForm.reset();
   articleFields.date.value = new Date().toISOString().slice(0, 10);
   articleFields.status.value = "draft";
+  articleFields.status.querySelector("option[value='finished']").disabled = false;
   paragraphFields.id.value = "";
   paragraphDraftImages = [];
   renderExistingImages([]);
@@ -210,7 +220,7 @@ function applyPermissions() {
   const canWriteParagraphs = Boolean(currentPermissions?.canWriteParagraphs);
   const canDeleteArticle = Boolean(currentPermissions?.canDeleteArticle);
 
-  const canManageSelected = article && (currentUser.role === "Admin" || article.createdByUserId === currentUser.id);
+  const canManageSelected = canManageSelectedArticle(article);
   const canWriteSelected = article && (currentUser.role === "Admin" || article.assignedJournalistIds.includes(currentUser.id));
 
   createArticleShortcutBtn.classList.toggle("hidden", !canCreateArticle);
@@ -281,13 +291,15 @@ function fillArticleMetaForm(article) {
     return;
   }
 
+  const unresolvedComments = countUnresolvedComments(article);
   articleMetaHeading.textContent = "Update Article Setup";
   articleFields.title.value = article.title;
   articleFields.category.value = article.category;
   articleFields.author.value = article.author;
   articleFields.date.value = article.date;
   articleFields.summary.value = article.summary;
-  articleFields.status.value = article.status;
+  articleFields.status.querySelector("option[value='finished']").disabled = unresolvedComments > 0;
+  articleFields.status.value = article.status === "finished" || unresolvedComments === 0 ? article.status : "draft";
   populateJournalistSelect(articleFields.assignedJournalistIds, article.assignedJournalistIds);
 }
 
@@ -310,17 +322,24 @@ function fillParagraphForm(paragraph) {
   paragraphCancelBtn.classList.remove("hidden");
 }
 
+function countUnresolvedComments(article) {
+  if (!article) {
+    return 0;
+  }
+
+  return article.paragraphs.reduce(
+    (count, paragraph) => count + paragraph.comments.filter((comment) => !comment.resolved).length,
+    0,
+  );
+}
+
 function renderParagraphCommentForm(paragraph) {
   if (!(currentUser && (currentUser.role === "Admin" || currentUser.role === "Editor"))) {
     return "";
   }
 
   const article = getSelectedArticle();
-  if (!article) {
-    return "";
-  }
-
-  if (currentUser.role === "Editor" && article.createdByUserId !== currentUser.id) {
+  if (!canManageSelectedArticle(article)) {
     return "";
   }
 
@@ -329,6 +348,25 @@ function renderParagraphCommentForm(paragraph) {
       <textarea name="commentText" rows="3" placeholder="Leave a comment for this paragraph..."></textarea>
       <button class="secondary-button" type="submit">Add comment</button>
     </form>
+  `;
+}
+
+function renderSolveCommentButton(paragraph, comment) {
+  const article = getSelectedArticle();
+  if (!article || comment.resolved || !canManageSelectedArticle(article)) {
+    return "";
+  }
+
+  return `
+    <button
+      class="secondary-button solve-comment-btn"
+      type="button"
+      data-action="solve-comment"
+      data-paragraph-id="${paragraph.id}"
+      data-comment-id="${comment.id}"
+    >
+      Solve comment
+    </button>
   `;
 }
 
@@ -359,6 +397,10 @@ function renderDetail(article) {
     return;
   }
 
+  const unresolvedComments = countUnresolvedComments(article);
+  const canManageCurrent = canManageSelectedArticle(article);
+  const shouldHideCommentsFromReader = currentUser?.role === "User" && article.status === "finished";
+
   const paragraphsHtml = article.paragraphs.length
     ? article.paragraphs
         .map((paragraph, index) => {
@@ -368,21 +410,29 @@ function renderDetail(article) {
                 .join("")}</div>`
             : `<p class="empty-inline">No images added for this paragraph yet.</p>`;
 
-          const commentsHtml = paragraph.comments.length
-            ? `<div class="comments-list">${paragraph.comments
-                .map(
-                  (comment) => `
-                    <div class="comment-item">
-                      <div class="comment-meta">${comment.authorName} (${comment.authorRole})</div>
-                      <div>${comment.text}</div>
-                    </div>
-                  `,
-                )
-                .join("")}</div>`
-            : `<p class="empty-inline">No editor comments yet.</p>`;
+          const commentsHtml = shouldHideCommentsFromReader
+            ? ""
+            : paragraph.comments.length
+              ? `<div class="comments-list">${paragraph.comments
+                  .map(
+                    (comment) => `
+                      <div class="comment-item ${comment.resolved ? "resolved" : "unresolved"}">
+                        <div class="comment-meta">
+                          ${comment.authorName} (${comment.authorRole})
+                          <span class="comment-status ${comment.resolved ? "resolved" : "unresolved"}">
+                            ${comment.resolved ? "Solved" : "Open"}
+                          </span>
+                        </div>
+                        <div>${comment.text}</div>
+                        ${renderSolveCommentButton(paragraph, comment)}
+                      </div>
+                    `,
+                  )
+                  .join("")}</div>`
+              : `<p class="empty-inline">No editor comments yet.</p>`;
 
           return `
-            <section class="paragraph-card">
+            <section class="paragraph-card${canManageCurrent ? " draggable" : ""}" data-paragraph-id="${paragraph.id}" ${canManageCurrent ? 'draggable="true"' : ""}>
               <div class="paragraph-actions">
                 <h3>Paragraph ${index + 1}</h3>
                 ${renderParagraphActions(paragraph)}
@@ -390,9 +440,9 @@ function renderDetail(article) {
               <div class="paragraph-meta">Updated by ${paragraph.updatedByName || "Unknown"}${paragraph.updatedAt ? ` on ${new Date(paragraph.updatedAt).toLocaleString("en-GB")}` : ""}</div>
               <p class="paragraph-text">${paragraph.text}</p>
               ${imagesHtml}
-              <div class="detail-assignees"><strong>Editor comments</strong></div>
+              ${shouldHideCommentsFromReader ? "" : '<div class="detail-assignees"><strong>Editor comments</strong></div>'}
               ${commentsHtml}
-              ${renderParagraphCommentForm(paragraph)}
+              ${shouldHideCommentsFromReader ? "" : renderParagraphCommentForm(paragraph)}
             </section>
           `;
         })
@@ -413,11 +463,65 @@ function renderDetail(article) {
     <p class="detail-assignees"><strong>Assigned journalists:</strong> ${article.assignedJournalists.map((entry) => entry.displayName).join(", ") || "No assignments yet"}</p>
     <p class="detail-assignees"><strong>Finished by:</strong> ${article.finishedByEditorName || "Not finished yet"}</p>
     <p class="detail-summary">${article.summary || "No summary added yet."}</p>
+    ${
+      canManageCurrent
+        ? unresolvedComments
+          ? `<p class="workflow-warning">This article still has ${unresolvedComments} open editor comment${unresolvedComments === 1 ? "" : "s"}. Solve them before finishing the article.</p>`
+          : '<p class="workflow-ok">All editor comments are solved. This article can now be finished.</p>'
+        : ""
+    }
     <div class="paragraph-list">${paragraphsHtml}</div>
   `;
 }
 
 function attachDetailInteractions() {
+  articleDetail.querySelectorAll(".paragraph-card.draggable").forEach((card) => {
+    card.addEventListener("dragstart", () => {
+      draggedParagraphId = card.dataset.paragraphId;
+      card.classList.add("dragging");
+    });
+
+    card.addEventListener("dragend", () => {
+      draggedParagraphId = null;
+      card.classList.remove("dragging");
+    });
+
+    card.addEventListener("dragover", (event) => {
+      event.preventDefault();
+    });
+
+    card.addEventListener("drop", async (event) => {
+      event.preventDefault();
+
+      const article = getSelectedArticle();
+      const targetParagraphId = card.dataset.paragraphId;
+      if (!article || !draggedParagraphId || draggedParagraphId === targetParagraphId) {
+        return;
+      }
+
+      const reorderedIds = article.paragraphs.map((paragraph) => paragraph.id);
+      const draggedIndex = reorderedIds.indexOf(draggedParagraphId);
+      const targetIndex = reorderedIds.indexOf(targetParagraphId);
+
+      if (draggedIndex === -1 || targetIndex === -1) {
+        return;
+      }
+
+      reorderedIds.splice(targetIndex, 0, reorderedIds.splice(draggedIndex, 1)[0]);
+
+      try {
+        await apiRequest(`/api/articles/${article.id}/paragraph-order`, {
+          method: "PATCH",
+          body: JSON.stringify({ paragraphIds: reorderedIds }),
+        });
+        await loadArticles(article.id);
+        showFeedback("Paragraph order updated.");
+      } catch (error) {
+        showFeedback(error.message);
+      }
+    });
+  });
+
   articleDetail.querySelectorAll("[data-action='edit-paragraph']").forEach((button) => {
     button.addEventListener("click", () => {
       const article = getSelectedArticle();
@@ -472,6 +576,28 @@ function attachDetailInteractions() {
         });
         await loadArticles(article.id);
         showFeedback("Comment added.");
+      } catch (error) {
+        showFeedback(error.message);
+      }
+    });
+  });
+
+  articleDetail.querySelectorAll("[data-action='solve-comment']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const article = getSelectedArticle();
+      if (!article) {
+        return;
+      }
+
+      try {
+        await apiRequest(
+          `/api/articles/${article.id}/paragraphs/${button.dataset.paragraphId}/comments/${button.dataset.commentId}/resolve`,
+          {
+            method: "PATCH",
+          },
+        );
+        await loadArticles(article.id);
+        showFeedback("Comment solved.");
       } catch (error) {
         showFeedback(error.message);
       }

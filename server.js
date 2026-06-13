@@ -121,6 +121,10 @@ const commentSchema = new mongoose.Schema(
     authorName: { type: String, required: true },
     authorRole: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
+    resolved: { type: Boolean, default: false },
+    resolvedAt: { type: Date, default: null },
+    resolvedById: { type: String, default: "" },
+    resolvedByName: { type: String, default: "" },
   },
   { _id: true, versionKey: false },
 );
@@ -196,6 +200,10 @@ function serializeParagraph(paragraph) {
       authorName: comment.authorName,
       authorRole: comment.authorRole,
       createdAt: comment.createdAt ? new Date(comment.createdAt).toISOString() : null,
+      resolved: Boolean(comment.resolved),
+      resolvedAt: comment.resolvedAt ? new Date(comment.resolvedAt).toISOString() : null,
+      resolvedById: comment.resolvedById || "",
+      resolvedByName: comment.resolvedByName || "",
     })),
     createdByUserId: paragraph.createdByUserId,
     createdByName: paragraph.createdByName,
@@ -328,6 +336,13 @@ function validateFinishedArticle(article) {
   const hasEmptyParagraph = article.paragraphs.some((paragraph) => !paragraph.text);
   if (hasEmptyParagraph) {
     return "Finished articles cannot contain empty paragraphs.";
+  }
+
+  const hasUnresolvedComments = article.paragraphs.some((paragraph) =>
+    (paragraph.comments || []).some((comment) => !comment.resolved),
+  );
+  if (hasUnresolvedComments) {
+    return "All editor comments must be solved before finishing the article.";
   }
 
   return null;
@@ -974,6 +989,47 @@ function createApp() {
     res.json({ id: req.params.paragraphId });
   });
 
+  app.patch("/api/articles/:id/paragraph-order", authenticateRequest, requireCapability("canManageArticle"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canManageArticle(article, req.user)) {
+      res.status(403).json({ message: "You can only reorder paragraphs on articles that you created." });
+      return;
+    }
+
+    const orderedParagraphIds = Array.isArray(req.body.paragraphIds)
+      ? req.body.paragraphIds.map((id) => String(id))
+      : [];
+
+    if (orderedParagraphIds.length !== article.paragraphs.length) {
+      res.status(400).json({ message: "The new order must include every paragraph exactly once." });
+      return;
+    }
+
+    const paragraphMap = new Map(article.paragraphs.map((paragraph) => [paragraph._id.toString(), paragraph]));
+    const reordered = [];
+
+    for (const paragraphId of orderedParagraphIds) {
+      const paragraph = paragraphMap.get(paragraphId);
+      if (!paragraph) {
+        res.status(400).json({ message: "Invalid paragraph order." });
+        return;
+      }
+      reordered.push(paragraph);
+    }
+
+    article.paragraphs = reordered;
+    await article.save();
+
+    const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
+    res.json(serializeArticleDocument(article, directory));
+  });
+
   app.post("/api/articles/:id/paragraphs/:paragraphId/comments", authenticateRequest, requireCapability("canComment"), async (req, res) => {
     const article = await Article.findById(req.params.id);
 
@@ -1005,6 +1061,10 @@ function createApp() {
       authorName: req.user.displayName,
       authorRole: req.user.role,
       createdAt: new Date(),
+      resolved: false,
+      resolvedAt: null,
+      resolvedById: "",
+      resolvedByName: "",
     });
 
     await article.save();
@@ -1016,6 +1076,50 @@ function createApp() {
       authorName: savedComment.authorName,
       authorRole: savedComment.authorRole,
       createdAt: new Date(savedComment.createdAt).toISOString(),
+      resolved: false,
+      resolvedAt: null,
+      resolvedById: "",
+      resolvedByName: "",
+    });
+  });
+
+  app.patch("/api/articles/:id/paragraphs/:paragraphId/comments/:commentId/resolve", authenticateRequest, requireCapability("canComment"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canCommentOnParagraph(article, req.user)) {
+      res.status(403).json({ message: "You can only resolve comments on articles that you created." });
+      return;
+    }
+
+    const paragraph = article.paragraphs.id(req.params.paragraphId);
+    if (!paragraph) {
+      res.status(404).json({ message: "Paragraph not found." });
+      return;
+    }
+
+    const comment = paragraph.comments.id(req.params.commentId);
+    if (!comment) {
+      res.status(404).json({ message: "Comment not found." });
+      return;
+    }
+
+    comment.resolved = true;
+    comment.resolvedAt = new Date();
+    comment.resolvedById = String(req.user.sub);
+    comment.resolvedByName = req.user.displayName;
+
+    await article.save();
+    res.json({
+      id: comment._id.toString(),
+      resolved: true,
+      resolvedAt: new Date(comment.resolvedAt).toISOString(),
+      resolvedById: comment.resolvedById,
+      resolvedByName: comment.resolvedByName,
     });
   });
 
