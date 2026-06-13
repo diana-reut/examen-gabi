@@ -4,6 +4,8 @@ const os = require("os");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
+const multer = require("multer");
+const { v2: cloudinary } = require("cloudinary");
 const { Pool } = require("pg");
 const { faker } = require("@faker-js/faker");
 require("dotenv").config();
@@ -16,11 +18,60 @@ const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-production";
 const POSTGRES_URL = process.env.POSTGRES_URL || "postgresql://postgres:postgres@127.0.0.1:5432/teoria_transpiratiei";
 const MONGODB_URL = process.env.MONGODB_URL || "mongodb://127.0.0.1:27017/teoria_transpiratiei";
 
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
+const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || "";
+const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || "";
+const CLOUDINARY_FOLDER = process.env.CLOUDINARY_FOLDER || "teoria-transpiratiei";
+
+if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
+  cloudinary.config({
+    cloud_name: CLOUDINARY_CLOUD_NAME,
+    api_key: CLOUDINARY_API_KEY,
+    api_secret: CLOUDINARY_API_SECRET,
+  });
+}
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+    files: 8,
+  },
+});
+
 const rolePermissions = {
-  Admin: { canCreate: true, canEdit: true, canDelete: true, canRead: true },
-  Editor: { canCreate: false, canEdit: true, canDelete: false, canRead: true },
-  Journalist: { canCreate: true, canEdit: false, canDelete: true, canRead: true },
-  User: { canCreate: false, canEdit: false, canDelete: false, canRead: true },
+  Admin: {
+    canCreateArticle: true,
+    canManageArticle: true,
+    canWriteParagraphs: true,
+    canComment: true,
+    canDeleteArticle: true,
+    articleScope: "all",
+  },
+  Editor: {
+    canCreateArticle: true,
+    canManageArticle: true,
+    canWriteParagraphs: false,
+    canComment: true,
+    canDeleteArticle: false,
+    articleScope: "created",
+  },
+  Journalist: {
+    canCreateArticle: false,
+    canManageArticle: false,
+    canWriteParagraphs: true,
+    canComment: false,
+    canDeleteArticle: false,
+    articleScope: "assigned",
+  },
+  User: {
+    canCreateArticle: false,
+    canManageArticle: false,
+    canWriteParagraphs: false,
+    canComment: false,
+    canDeleteArticle: false,
+    articleScope: "finished",
+  },
 };
 
 const articleTopics = [
@@ -44,18 +95,66 @@ const articleCategories = [
 const seededUsers = [
   { username: "admin", password: "admin123", role: "Admin", displayName: "Admin User" },
   { username: "editor", password: "editor123", role: "Editor", displayName: "Editor User" },
+  { username: "editor2", password: "editor223", role: "Editor", displayName: "Mara Editor" },
+  { username: "editor3", password: "editor323", role: "Editor", displayName: "Paul Editor" },
   { username: "journalist", password: "journalist123", role: "Journalist", displayName: "Journalist User" },
+  { username: "journalist2", password: "journalist223", role: "Journalist", displayName: "Ana Journalist" },
+  { username: "journalist3", password: "journalist323", role: "Journalist", displayName: "Victor Journalist" },
+  { username: "journalist4", password: "journalist423", role: "Journalist", displayName: "Teo Journalist" },
   { username: "user", password: "user123", role: "User", displayName: "Reader User" },
 ];
 
+const imageSchema = new mongoose.Schema(
+  {
+    url: { type: String, required: true },
+    publicId: { type: String, required: true },
+    width: { type: Number, default: null },
+    height: { type: Number, default: null },
+  },
+  { _id: true, versionKey: false },
+);
+
+const commentSchema = new mongoose.Schema(
+  {
+    text: { type: String, required: true, trim: true },
+    authorId: { type: String, required: true },
+    authorName: { type: String, required: true },
+    authorRole: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: true, versionKey: false },
+);
+
+const paragraphSchema = new mongoose.Schema(
+  {
+    text: { type: String, default: "", trim: true },
+    images: { type: [imageSchema], default: [] },
+    comments: { type: [commentSchema], default: [] },
+    createdByUserId: { type: String, default: "" },
+    createdByName: { type: String, default: "" },
+    updatedByUserId: { type: String, default: "" },
+    updatedByName: { type: String, default: "" },
+    updatedAt: { type: Date, default: Date.now },
+  },
+  { _id: true, versionKey: false },
+);
+
 const articleSchema = new mongoose.Schema(
   {
-    title: { type: String, required: true, trim: true },
-    category: { type: String, required: true, trim: true },
-    author: { type: String, required: true, trim: true },
-    date: { type: Date, required: true },
-    summary: { type: String, required: true, trim: true },
-    content: { type: String, required: true, trim: true },
+    title: { type: String, default: "", trim: true },
+    category: { type: String, default: "", trim: true },
+    author: { type: String, default: "", trim: true },
+    date: { type: Date, default: Date.now },
+    summary: { type: String, default: "", trim: true },
+    assignedJournalistIds: { type: [String], default: [] },
+    status: { type: String, enum: ["draft", "finished"], default: "draft" },
+    paragraphs: { type: [paragraphSchema], default: [] },
+    createdByUserId: { type: String, default: "" },
+    createdByName: { type: String, default: "" },
+    createdByRole: { type: String, default: "" },
+    finishedByEditorId: { type: String, default: "" },
+    finishedByEditorName: { type: String, default: "" },
+    finishedAt: { type: Date, default: null },
   },
   {
     versionKey: false,
@@ -75,7 +174,42 @@ function serializeUser(user) {
   };
 }
 
-function serializeArticleDocument(article) {
+function serializePermissions(role) {
+  return rolePermissions[role];
+}
+
+function serializeParagraph(paragraph) {
+  return {
+    id: paragraph._id.toString(),
+    text: paragraph.text,
+    images: (paragraph.images || []).map((image) => ({
+      id: image._id.toString(),
+      url: image.url,
+      publicId: image.publicId,
+      width: image.width,
+      height: image.height,
+    })),
+    comments: (paragraph.comments || []).map((comment) => ({
+      id: comment._id.toString(),
+      text: comment.text,
+      authorId: comment.authorId,
+      authorName: comment.authorName,
+      authorRole: comment.authorRole,
+      createdAt: comment.createdAt ? new Date(comment.createdAt).toISOString() : null,
+    })),
+    createdByUserId: paragraph.createdByUserId,
+    createdByName: paragraph.createdByName,
+    updatedByUserId: paragraph.updatedByUserId,
+    updatedByName: paragraph.updatedByName,
+    updatedAt: paragraph.updatedAt ? new Date(paragraph.updatedAt).toISOString() : null,
+  };
+}
+
+function serializeArticleDocument(article, userDirectory = new Map()) {
+  const assignedJournalists = (article.assignedJournalistIds || [])
+    .map((id) => userDirectory.get(String(id)))
+    .filter(Boolean);
+
   return {
     id: article._id.toString(),
     title: article.title,
@@ -83,31 +217,117 @@ function serializeArticleDocument(article) {
     author: article.author,
     date: new Date(article.date).toISOString().slice(0, 10),
     summary: article.summary,
-    content: article.content,
+    status: article.status,
+    assignedJournalistIds: article.assignedJournalistIds || [],
+    assignedJournalists,
+    createdByUserId: article.createdByUserId,
+    createdByName: article.createdByName,
+    createdByRole: article.createdByRole,
+    finishedByEditorName: article.finishedByEditorName || "",
+    finishedAt: article.finishedAt ? new Date(article.finishedAt).toISOString() : null,
+    paragraphs: (article.paragraphs || []).map(serializeParagraph),
   };
 }
 
-function normalizeArticlePayload(body) {
+function normalizeAssignedJournalistIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value.map((entry) => String(entry).trim()).filter(Boolean))];
+}
+
+function normalizeArticleCreatePayload(body) {
+  return {
+    title: String(body.title || "").trim(),
+    category: String(body.category || "").trim(),
+    author: String(body.author || "").trim(),
+    date: String(body.date || "").trim() || new Date().toISOString().slice(0, 10),
+    summary: String(body.summary || "").trim(),
+    assignedJournalistIds: normalizeAssignedJournalistIds(body.assignedJournalistIds),
+  };
+}
+
+function normalizeArticleManagePayload(body) {
   return {
     title: String(body.title || "").trim(),
     category: String(body.category || "").trim(),
     author: String(body.author || "").trim(),
     date: String(body.date || "").trim(),
     summary: String(body.summary || "").trim(),
-    content: String(body.content || "").trim(),
+    assignedJournalistIds: normalizeAssignedJournalistIds(body.assignedJournalistIds),
+    status: body.status === "finished" ? "finished" : "draft",
   };
 }
 
-function validateArticlePayload(payload) {
-  const requiredFields = ["title", "category", "author", "date", "summary", "content"];
-  const missingField = requiredFields.find((field) => !payload[field]);
+function normalizeParagraphPayload(body) {
+  return {
+    text: String(body.text || "").trim(),
+    images: Array.isArray(body.images)
+      ? body.images
+          .map((image) => ({
+            url: String(image.url || "").trim(),
+            publicId: String(image.publicId || "").trim(),
+            width: image.width ?? null,
+            height: image.height ?? null,
+          }))
+          .filter((image) => image.url && image.publicId)
+      : [],
+  };
+}
 
-  if (missingField) {
-    return `Field "${missingField}" is required.`;
+function validateArticleCreatePayload(payload) {
+  if (!payload.title) {
+    return 'Field "title" is required.';
   }
 
   if (Number.isNaN(new Date(payload.date).getTime())) {
     return 'Field "date" must be a valid date.';
+  }
+
+  if (payload.assignedJournalistIds.length < 1 || payload.assignedJournalistIds.length > 2) {
+    return "Each article must be assigned to one or two journalists.";
+  }
+
+  return null;
+}
+
+function validateArticleManagePayload(payload) {
+  if (!payload.title) {
+    return 'Field "title" is required.';
+  }
+
+  if (!payload.date || Number.isNaN(new Date(payload.date).getTime())) {
+    return 'Field "date" must be a valid date.';
+  }
+
+  if (payload.assignedJournalistIds.length < 1 || payload.assignedJournalistIds.length > 2) {
+    return "An editor must assign one or two journalists.";
+  }
+
+  return null;
+}
+
+function validateParagraphPayload(payload) {
+  if (!payload.text) {
+    return 'Field "text" is required.';
+  }
+
+  return null;
+}
+
+function validateFinishedArticle(article) {
+  if (!article.title || !article.author || !article.date) {
+    return "Finished articles must have a title, author, and date.";
+  }
+
+  if (!article.paragraphs || !article.paragraphs.length) {
+    return "Finished articles must have at least one paragraph.";
+  }
+
+  const hasEmptyParagraph = article.paragraphs.some((paragraph) => !paragraph.text);
+  if (hasEmptyParagraph) {
+    return "Finished articles cannot contain empty paragraphs.";
   }
 
   return null;
@@ -130,28 +350,73 @@ function authenticateRequest(req, res, next) {
   }
 }
 
-function requireReadPermission(req, res, next) {
-  const permissions = rolePermissions[req.user.role];
-
-  if (!permissions?.canRead) {
-    res.status(403).json({ message: "You are not allowed to view articles." });
-    return;
-  }
-
-  next();
-}
-
-function requirePermission(permissionKey) {
+function requireCapability(capability) {
   return (req, res, next) => {
-    const permissions = rolePermissions[req.user.role];
+    const permissions = serializePermissions(req.user.role);
 
-    if (!permissions?.[permissionKey]) {
+    if (!permissions?.[capability]) {
       res.status(403).json({ message: "You are not allowed to perform this action." });
       return;
     }
 
     next();
   };
+}
+
+function buildArticleVisibilityFilter(user) {
+  if (user.role === "Editor") {
+    return { createdByUserId: String(user.sub) };
+  }
+
+  if (user.role === "Journalist") {
+    return { assignedJournalistIds: String(user.sub) };
+  }
+
+  if (user.role === "User") {
+    return { status: "finished" };
+  }
+
+  return {};
+}
+
+function canManageArticle(article, user) {
+  if (user.role === "Admin") {
+    return true;
+  }
+
+  return user.role === "Editor" && article.createdByUserId === String(user.sub);
+}
+
+function canWriteParagraphs(article, user) {
+  if (user.role === "Admin") {
+    return true;
+  }
+
+  return user.role === "Journalist" && (article.assignedJournalistIds || []).includes(String(user.sub));
+}
+
+function canViewArticle(article, user) {
+  if (user.role === "Admin") {
+    return true;
+  }
+
+  if (user.role === "Editor") {
+    return article.createdByUserId === String(user.sub);
+  }
+
+  if (user.role === "Journalist") {
+    return (article.assignedJournalistIds || []).includes(String(user.sub));
+  }
+
+  return article.status === "finished";
+}
+
+function canCommentOnParagraph(article, user) {
+  if (user.role === "Admin") {
+    return true;
+  }
+
+  return user.role === "Editor" && article.createdByUserId === String(user.sub);
 }
 
 async function ensurePostgresSchema() {
@@ -183,17 +448,73 @@ async function ensureSeedUsers() {
   }
 }
 
+async function getUsersByRole(role) {
+  const result = await postgresPool.query(
+    "SELECT id, username, role, display_name FROM users WHERE role = $1 ORDER BY display_name ASC",
+    [role],
+  );
+
+  return result.rows.map((row) => ({
+    id: String(row.id),
+    username: row.username,
+    role: row.role,
+    displayName: row.display_name,
+  }));
+}
+
+async function getUserDirectoryByIds(userIds) {
+  const normalizedIds = [...new Set(userIds.map((id) => Number(id)).filter((id) => Number.isInteger(id)))];
+
+  if (!normalizedIds.length) {
+    return new Map();
+  }
+
+  const result = await postgresPool.query(
+    "SELECT id, username, role, display_name FROM users WHERE id = ANY($1::int[])",
+    [normalizedIds],
+  );
+
+  return new Map(
+    result.rows.map((row) => [
+      String(row.id),
+      {
+        id: String(row.id),
+        username: row.username,
+        role: row.role,
+        displayName: row.display_name,
+      },
+    ]),
+  );
+}
+
+async function serializeArticlesWithAssignments(articles) {
+  const userIds = articles.flatMap((article) => article.assignedJournalistIds || []);
+  const directory = await getUserDirectoryByIds(userIds);
+  return articles.map((article) => serializeArticleDocument(article, directory));
+}
+
 async function ensureSeedArticles() {
   const existingArticles = await Article.countDocuments();
   if (existingArticles > 0) {
     return;
   }
 
-  const seededArticles = Array.from({ length: 8 }, () => {
+  const journalists = await getUsersByRole("Journalist");
+  const editors = await getUsersByRole("Editor");
+
+  if (!journalists.length || !editors.length) {
+    return;
+  }
+
+  const seededArticles = Array.from({ length: 10 }, (_, index) => {
     const publishedAt = faker.date.between({
       from: "2026-05-01T00:00:00.000Z",
       to: "2026-06-13T00:00:00.000Z",
     });
+
+    const assigned = faker.helpers.arrayElements(journalists, faker.number.int({ min: 1, max: 2 }));
+    const editor = faker.helpers.arrayElement(editors);
+    const finished = index % 3 !== 0;
 
     return {
       title: faker.helpers.arrayElement(articleTopics),
@@ -201,11 +522,122 @@ async function ensureSeedArticles() {
       author: faker.person.fullName(),
       date: publishedAt,
       summary: faker.lorem.sentences({ min: 2, max: 3 }),
-      content: faker.lorem.paragraphs({ min: 3, max: 5 }, "\n\n"),
+      assignedJournalistIds: assigned.map((journalist) => journalist.id),
+      status: finished ? "finished" : "draft",
+      paragraphs: [
+        {
+          text: faker.lorem.paragraphs({ min: 1, max: 2 }, "\n\n"),
+          images: [],
+          comments: [],
+          createdByUserId: assigned[0].id,
+          createdByName: assigned[0].displayName,
+          updatedByUserId: assigned[0].id,
+          updatedByName: assigned[0].displayName,
+          updatedAt: new Date(),
+        },
+      ],
+      createdByUserId: editor.id,
+      createdByName: editor.displayName,
+      createdByRole: editor.role,
+      finishedByEditorId: finished ? editor.id : "",
+      finishedByEditorName: finished ? editor.displayName : "",
+      finishedAt: finished ? new Date() : null,
     };
   });
 
   await Article.insertMany(seededArticles);
+}
+
+async function ensureArticleStructureDefaults() {
+  const articles = await Article.find();
+
+  if (!articles.length) {
+    return;
+  }
+
+  const fallbackJournalists = await getUsersByRole("Journalist");
+  const fallbackEditor = (await getUsersByRole("Editor"))[0];
+
+  for (const article of articles) {
+    let changed = false;
+
+    if (!article.assignedJournalistIds || !article.assignedJournalistIds.length) {
+      const assigned = faker.helpers.arrayElements(fallbackJournalists, faker.number.int({ min: 1, max: 2 }));
+      article.assignedJournalistIds = assigned.map((entry) => entry.id);
+      changed = true;
+    }
+
+    if (!article.createdByUserId && fallbackEditor) {
+      article.createdByUserId = fallbackEditor.id;
+      article.createdByName = fallbackEditor.displayName;
+      article.createdByRole = fallbackEditor.role;
+      changed = true;
+    }
+
+    if (!Array.isArray(article.paragraphs)) {
+      article.paragraphs = [];
+      changed = true;
+    }
+
+    if (!article.paragraphs.length && article.content) {
+      article.paragraphs = [
+        {
+          text: article.content,
+          images: [],
+          comments: [],
+          createdByUserId: article.assignedJournalistIds[0] || "",
+          createdByName: "",
+          updatedByUserId: article.assignedJournalistIds[0] || "",
+          updatedByName: "",
+          updatedAt: new Date(),
+        },
+      ];
+      changed = true;
+    }
+
+    if (article.status === "finished" && !article.finishedByEditorName && fallbackEditor) {
+      article.finishedByEditorId = fallbackEditor.id;
+      article.finishedByEditorName = fallbackEditor.displayName;
+      article.finishedAt = article.finishedAt || new Date();
+      changed = true;
+    }
+
+    if (changed) {
+      await article.save();
+    }
+  }
+}
+
+function ensureCloudinaryConfigured() {
+  return CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET;
+}
+
+async function uploadBufferToCloudinary(fileBuffer, originalName, mimeType) {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: CLOUDINARY_FOLDER,
+        resource_type: "image",
+        public_id: `${Date.now()}-${originalName.replace(/\.[^.]+$/, "")}`,
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve({
+          url: result.secure_url,
+          publicId: result.public_id,
+          width: result.width || null,
+          height: result.height || null,
+          mimeType,
+        });
+      },
+    );
+
+    uploadStream.end(fileBuffer);
+  });
 }
 
 function getLanUrls(port) {
@@ -225,7 +657,7 @@ function getLanUrls(port) {
 
 function createApp() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" }));
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
@@ -268,23 +700,30 @@ function createApp() {
     res.json({
       token,
       user: serializeUser(payload),
-      permissions: rolePermissions[user.role],
+      permissions: serializePermissions(user.role),
     });
   });
 
   app.get("/api/auth/me", authenticateRequest, (req, res) => {
     res.json({
       user: serializeUser(req.user),
-      permissions: rolePermissions[req.user.role],
+      permissions: serializePermissions(req.user.role),
     });
   });
 
-  app.get("/api/articles", authenticateRequest, requireReadPermission, async (_req, res) => {
-    const articles = await Article.find().sort({ date: -1, createdAt: -1 }).lean();
-    res.json(articles.map(serializeArticleDocument));
+  app.get("/api/journalists", authenticateRequest, requireCapability("canManageArticle"), async (_req, res) => {
+    res.json(await getUsersByRole("Journalist"));
   });
 
-  app.get("/api/articles/:id", authenticateRequest, requireReadPermission, async (req, res) => {
+  app.get("/api/articles", authenticateRequest, async (req, res) => {
+    const articles = await Article.find(buildArticleVisibilityFilter(req.user))
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    res.json(await serializeArticlesWithAssignments(articles));
+  });
+
+  app.get("/api/articles/:id", authenticateRequest, async (req, res) => {
     const article = await Article.findById(req.params.id).lean();
 
     if (!article) {
@@ -292,53 +731,102 @@ function createApp() {
       return;
     }
 
-    res.json(serializeArticleDocument(article));
+    if (!canViewArticle(article, req.user)) {
+      res.status(403).json({ message: "You are not allowed to view this article." });
+      return;
+    }
+
+    const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
+    res.json(serializeArticleDocument(article, directory));
   });
 
-  app.post("/api/articles", authenticateRequest, requirePermission("canCreate"), async (req, res) => {
-    const payload = normalizeArticlePayload(req.body);
-    const validationError = validateArticlePayload(payload);
+  app.post("/api/articles", authenticateRequest, requireCapability("canCreateArticle"), async (req, res) => {
+    const payload = normalizeArticleCreatePayload(req.body);
+    const validationError = validateArticleCreatePayload(payload);
 
     if (validationError) {
       res.status(400).json({ message: validationError });
+      return;
+    }
+
+    const validJournalists = await getUserDirectoryByIds(payload.assignedJournalistIds);
+    if (validJournalists.size !== payload.assignedJournalistIds.length) {
+      res.status(400).json({ message: "All assigned users must be valid journalists." });
       return;
     }
 
     const article = await Article.create({
       ...payload,
       date: new Date(payload.date),
+      status: "draft",
+      paragraphs: [],
+      createdByUserId: String(req.user.sub),
+      createdByName: req.user.displayName,
+      createdByRole: req.user.role,
+      finishedByEditorId: "",
+      finishedByEditorName: "",
+      finishedAt: null,
     });
 
-    res.status(201).json(serializeArticleDocument(article));
+    res.status(201).json(serializeArticleDocument(article, validJournalists));
   });
 
-  app.put("/api/articles/:id", authenticateRequest, requirePermission("canEdit"), async (req, res) => {
-    const payload = normalizeArticlePayload(req.body);
-    const validationError = validateArticlePayload(payload);
-
-    if (validationError) {
-      res.status(400).json({ message: validationError });
-      return;
-    }
-
-    const article = await Article.findByIdAndUpdate(
-      req.params.id,
-      {
-        ...payload,
-        date: new Date(payload.date),
-      },
-      { new: true, runValidators: true },
-    );
+  app.patch("/api/articles/:id", authenticateRequest, requireCapability("canManageArticle"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
 
     if (!article) {
       res.status(404).json({ message: "Article not found." });
       return;
     }
 
-    res.json(serializeArticleDocument(article));
+    if (!canManageArticle(article, req.user)) {
+      res.status(403).json({ message: "You can only manage articles that you created." });
+      return;
+    }
+
+    const payload = normalizeArticleManagePayload(req.body);
+    const validationError = validateArticleManagePayload(payload);
+
+    if (validationError) {
+      res.status(400).json({ message: validationError });
+      return;
+    }
+
+    const validJournalists = await getUserDirectoryByIds(payload.assignedJournalistIds);
+    if (validJournalists.size !== payload.assignedJournalistIds.length) {
+      res.status(400).json({ message: "All assigned users must be valid journalists." });
+      return;
+    }
+
+    article.title = payload.title;
+    article.category = payload.category;
+    article.author = payload.author;
+    article.date = new Date(payload.date);
+    article.summary = payload.summary;
+    article.assignedJournalistIds = payload.assignedJournalistIds;
+    article.status = payload.status;
+
+    if (payload.status === "finished") {
+      const finishedValidationError = validateFinishedArticle(article);
+      if (finishedValidationError) {
+        res.status(400).json({ message: finishedValidationError });
+        return;
+      }
+
+      article.finishedByEditorId = String(req.user.sub);
+      article.finishedByEditorName = req.user.displayName;
+      article.finishedAt = new Date();
+    } else {
+      article.finishedByEditorId = "";
+      article.finishedByEditorName = "";
+      article.finishedAt = null;
+    }
+
+    await article.save();
+    res.json(serializeArticleDocument(article, validJournalists));
   });
 
-  app.delete("/api/articles/:id", authenticateRequest, requirePermission("canDelete"), async (req, res) => {
+  app.delete("/api/articles/:id", authenticateRequest, requireCapability("canDeleteArticle"), async (req, res) => {
     const article = await Article.findByIdAndDelete(req.params.id);
 
     if (!article) {
@@ -346,7 +834,219 @@ function createApp() {
       return;
     }
 
-    res.json(serializeArticleDocument(article));
+    const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
+    res.json(serializeArticleDocument(article, directory));
+  });
+
+  app.post("/api/articles/:id/uploads", authenticateRequest, requireCapability("canWriteParagraphs"), upload.array("images", 8), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canWriteParagraphs(article, req.user)) {
+      res.status(403).json({ message: "You can only upload images for assigned articles." });
+      return;
+    }
+
+    if (!ensureCloudinaryConfigured()) {
+      res.status(500).json({ message: "Cloudinary is not configured yet." });
+      return;
+    }
+
+    const files = req.files || [];
+    if (!files.length) {
+      res.status(400).json({ message: "Please upload at least one image." });
+      return;
+    }
+
+    const uploads = await Promise.all(
+      files.map((file) => uploadBufferToCloudinary(file.buffer, file.originalname, file.mimetype)),
+    );
+
+    res.status(201).json({
+      images: uploads.map((image) => ({
+        url: image.url,
+        publicId: image.publicId,
+        width: image.width,
+        height: image.height,
+      })),
+    });
+  });
+
+  app.post("/api/articles/:id/paragraphs", authenticateRequest, requireCapability("canWriteParagraphs"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canWriteParagraphs(article, req.user)) {
+      res.status(403).json({ message: "You can only write on articles assigned to you." });
+      return;
+    }
+
+    const payload = normalizeParagraphPayload(req.body);
+    const validationError = validateParagraphPayload(payload);
+
+    if (validationError) {
+      res.status(400).json({ message: validationError });
+      return;
+    }
+
+    article.paragraphs.push({
+      text: payload.text,
+      images: payload.images,
+      comments: [],
+      createdByUserId: String(req.user.sub),
+      createdByName: req.user.displayName,
+      updatedByUserId: String(req.user.sub),
+      updatedByName: req.user.displayName,
+      updatedAt: new Date(),
+    });
+
+    await article.save();
+    const savedParagraph = article.paragraphs[article.paragraphs.length - 1];
+    res.status(201).json(serializeParagraph(savedParagraph));
+  });
+
+  app.put("/api/articles/:id/paragraphs/:paragraphId", authenticateRequest, requireCapability("canWriteParagraphs"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canWriteParagraphs(article, req.user)) {
+      res.status(403).json({ message: "You can only edit paragraphs for assigned articles." });
+      return;
+    }
+
+    const paragraph = article.paragraphs.id(req.params.paragraphId);
+    if (!paragraph) {
+      res.status(404).json({ message: "Paragraph not found." });
+      return;
+    }
+
+    const payload = normalizeParagraphPayload(req.body);
+    const validationError = validateParagraphPayload(payload);
+
+    if (validationError) {
+      res.status(400).json({ message: validationError });
+      return;
+    }
+
+    paragraph.text = payload.text;
+    paragraph.images = payload.images;
+    paragraph.updatedByUserId = String(req.user.sub);
+    paragraph.updatedByName = req.user.displayName;
+    paragraph.updatedAt = new Date();
+
+    await article.save();
+    res.json(serializeParagraph(paragraph));
+  });
+
+  app.delete("/api/articles/:id/paragraphs/:paragraphId", authenticateRequest, requireCapability("canWriteParagraphs"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canWriteParagraphs(article, req.user)) {
+      res.status(403).json({ message: "You can only delete paragraphs for assigned articles." });
+      return;
+    }
+
+    const paragraph = article.paragraphs.id(req.params.paragraphId);
+    if (!paragraph) {
+      res.status(404).json({ message: "Paragraph not found." });
+      return;
+    }
+
+    paragraph.deleteOne();
+    await article.save();
+    res.json({ id: req.params.paragraphId });
+  });
+
+  app.post("/api/articles/:id/paragraphs/:paragraphId/comments", authenticateRequest, requireCapability("canComment"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canCommentOnParagraph(article, req.user)) {
+      res.status(403).json({ message: "You can only comment on articles that you created." });
+      return;
+    }
+
+    const paragraph = article.paragraphs.id(req.params.paragraphId);
+    if (!paragraph) {
+      res.status(404).json({ message: "Paragraph not found." });
+      return;
+    }
+
+    const text = String(req.body.text || "").trim();
+    if (!text) {
+      res.status(400).json({ message: 'Field "text" is required.' });
+      return;
+    }
+
+    paragraph.comments.push({
+      text,
+      authorId: String(req.user.sub),
+      authorName: req.user.displayName,
+      authorRole: req.user.role,
+      createdAt: new Date(),
+    });
+
+    await article.save();
+    const savedComment = paragraph.comments[paragraph.comments.length - 1];
+    res.status(201).json({
+      id: savedComment._id.toString(),
+      text: savedComment.text,
+      authorId: savedComment.authorId,
+      authorName: savedComment.authorName,
+      authorRole: savedComment.authorRole,
+      createdAt: new Date(savedComment.createdAt).toISOString(),
+    });
+  });
+
+  app.delete("/api/articles/:id/paragraphs/:paragraphId/comments/:commentId", authenticateRequest, requireCapability("canComment"), async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canCommentOnParagraph(article, req.user)) {
+      res.status(403).json({ message: "You can only manage comments on articles that you created." });
+      return;
+    }
+
+    const paragraph = article.paragraphs.id(req.params.paragraphId);
+    if (!paragraph) {
+      res.status(404).json({ message: "Paragraph not found." });
+      return;
+    }
+
+    const comment = paragraph.comments.id(req.params.commentId);
+    if (!comment) {
+      res.status(404).json({ message: "Comment not found." });
+      return;
+    }
+
+    comment.deleteOne();
+    await article.save();
+    res.json({ id: req.params.commentId });
   });
 
   app.use(express.static(path.join(__dirname, "frontend")));
@@ -356,6 +1056,22 @@ function createApp() {
 
   app.use((error, _req, res, _next) => {
     console.error(error);
+
+    if (error instanceof multer.MulterError) {
+      if (error.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({ message: "Image too large. Maximum size is 8 MB per file." });
+        return;
+      }
+
+      res.status(400).json({ message: error.message || "Upload failed." });
+      return;
+    }
+
+    if (error?.http_code && error?.message) {
+      res.status(400).json({ message: `Cloudinary upload failed: ${error.message}` });
+      return;
+    }
+
     res.status(500).json({ message: "Internal server error." });
   });
 
@@ -367,6 +1083,7 @@ async function startServer() {
   await ensurePostgresSchema();
   await ensureSeedUsers();
   await ensureSeedArticles();
+  await ensureArticleStructureDefaults();
 
   const app = createApp();
   app.listen(PORT, HOST, () => {
@@ -378,7 +1095,7 @@ async function startServer() {
       lanUrls.forEach((url) => console.log(`  ${url}`));
     }
 
-    console.log("Using PostgreSQL for users/auth and MongoDB for articles.");
+    console.log("Using PostgreSQL for users/auth, MongoDB for articles, and Cloudinary for images.");
     console.log("Seeded users:");
     seededUsers.forEach((user) => console.log(`  ${user.username} / ${user.password} (${user.role})`));
   });

@@ -15,9 +15,9 @@
       <div class="brand-lockup">
         <img class="brand-logo" src="./assets/logo.png" alt="Teoria Transpiratiei logo">
         <div class="brand-copy">
-          <p class="eyebrow">Online Journal</p>
+          <p class="eyebrow">Editorial Workflow</p>
           <h1>Perspiration Theory / Teoria Transpiratiei</h1>
-          <p class="hero-text">Persistent editorial workspace with PostgreSQL authentication, MongoDB-backed articles, and LAN-ready access.</p>
+          <p class="hero-text">Editors commission and review. Journalists write in paragraphs with Cloudinary images. Readers see only finished work.</p>
         </div>
       </div>
     </header>
@@ -63,7 +63,12 @@
           <div class="seeded-grid">
             <div><strong>Admin</strong><span>admin / admin123</span></div>
             <div><strong>Editor</strong><span>editor / editor123</span></div>
+            <div><strong>Editor</strong><span>editor2 / editor223</span></div>
+            <div><strong>Editor</strong><span>editor3 / editor323</span></div>
             <div><strong>Journalist</strong><span>journalist / journalist123</span></div>
+            <div><strong>Journalist</strong><span>journalist2 / journalist223</span></div>
+            <div><strong>Journalist</strong><span>journalist3 / journalist323</span></div>
+            <div><strong>Journalist</strong><span>journalist4 / journalist423</span></div>
             <div><strong>User</strong><span>user / user123</span></div>
           </div>
         </div>
@@ -75,11 +80,11 @@
         <div class="section-heading">
           <div>
             <p class="section-label">Articles</p>
-            <h2>Latest Stories</h2>
+            <h2>Desk</h2>
           </div>
           <div class="toolbar">
             <span id="articleCount" class="count-badge">0 articles</span>
-            <button id="createArticleBtn" class="secondary-button hidden" type="button">New article</button>
+            <button id="createArticleShortcutBtn" class="secondary-button hidden" type="button">New article</button>
           </div>
         </div>
         <div id="feedbackBanner" class="feedback-banner hidden" role="status" aria-live="polite"></div>
@@ -88,7 +93,6 @@
 
       <section class="detail-column">
         <div class="detail-actions">
-          <button id="editArticleBtn" class="secondary-button hidden" type="button">Edit article</button>
           <button id="deleteArticleBtn" class="danger-button hidden" type="button">Delete article</button>
         </div>
 
@@ -96,52 +100,89 @@
           <p class="detail-placeholder">Log in to load articles.</p>
         </article>
 
-        <section id="editorShell" class="editor-shell hidden">
+        <section id="articleMetaShell" class="editor-shell hidden">
           <div class="section-heading editor-heading">
             <div>
-              <p class="section-label">Editor</p>
-              <h2 id="formHeading">Create Article</h2>
+              <p class="section-label">Article Setup</p>
+              <h2 id="articleMetaHeading">Create Article</h2>
             </div>
-            <button id="cancelEditBtn" class="ghost-button hidden" type="button">Cancel edit</button>
           </div>
 
-          <form id="articleForm" class="article-form">
-            <input id="articleId" type="hidden">
-
+          <form id="articleMetaForm" class="article-form">
             <label>
               Title
-              <input id="titleInput" name="title" type="text" required>
-            </label>
-
-            <label>
-              Category
-              <input id="categoryInput" name="category" type="text" required>
+              <input id="articleTitleInput" name="title" type="text" required>
             </label>
 
             <div class="field-row">
               <label>
-                Author
-                <input id="authorInput" name="author" type="text" required>
+                Category
+                <input id="articleCategoryInput" name="category" type="text">
               </label>
 
               <label>
                 Publish date
-                <input id="dateInput" name="date" type="date" required>
+                <input id="articleDateInput" name="date" type="date" required>
               </label>
             </div>
 
             <label>
-              Summary
-              <textarea id="summaryInput" name="summary" rows="3" required></textarea>
+              Author
+              <input id="articleAuthorInput" name="author" type="text">
             </label>
 
             <label>
-              Full content
-              <textarea id="contentInput" name="content" rows="8" required></textarea>
+              Summary
+              <textarea id="articleSummaryInput" name="summary" rows="3"></textarea>
             </label>
 
+            <div class="field-row">
+              <label>
+                Assign 1-2 journalists
+                <select id="articleAssignedInput" name="assignedJournalistIds" multiple size="5" required></select>
+              </label>
+
+              <label>
+                Status
+                <select id="articleStatusInput" name="status">
+                  <option value="draft">Draft</option>
+                  <option value="finished">Finished</option>
+                </select>
+              </label>
+            </div>
+
             <div class="form-actions">
-              <button id="saveArticleBtn" class="primary-button" type="submit">Save article</button>
+              <button id="articleMetaSubmitBtn" class="primary-button" type="submit">Save article setup</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="paragraphShell" class="editor-shell hidden">
+          <div class="section-heading editor-heading">
+            <div>
+              <p class="section-label">Writing</p>
+              <h2>Add Paragraph</h2>
+            </div>
+          </div>
+
+          <form id="paragraphForm" class="article-form">
+            <input id="paragraphIdInput" type="hidden">
+
+            <label>
+              Paragraph text
+              <textarea id="paragraphTextInput" name="text" rows="8" required></textarea>
+            </label>
+
+            <label>
+              Upload images
+              <input id="paragraphImagesInput" name="images" type="file" accept="image/*" multiple>
+            </label>
+
+            <div id="paragraphExistingImages" class="existing-images hidden"></div>
+
+            <div class="form-actions">
+              <button id="paragraphSubmitBtn" class="primary-button" type="submit">Save paragraph</button>
+              <button id="paragraphCancelBtn" class="ghost-button hidden" type="button">Cancel edit</button>
             </div>
           </form>
         </section>
