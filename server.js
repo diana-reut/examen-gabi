@@ -1,6 +1,10 @@
 const express = require("express");
+const http = require("http");
+const https = require("https");
 const path = require("path");
 const os = require("os");
+const fs = require("fs");
+const { spawnSync } = require("child_process");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
@@ -15,9 +19,17 @@ faker.seed(20260613);
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
+const HTTPS_PORT = Number(process.env.HTTPS_PORT) || 3443;
+const HTTPS_ENABLED = process.env.HTTPS_ENABLED === "true";
+const HTTPS_KEY_PATH = process.env.HTTPS_KEY_PATH || "";
+const HTTPS_CERT_PATH = process.env.HTTPS_CERT_PATH || "";
 const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-production";
 const POSTGRES_URL = process.env.POSTGRES_URL || "postgresql://postgres:postgres@127.0.0.1:5432/teoria_transpiratiei";
 const MONGODB_URL = process.env.MONGODB_URL || "mongodb://127.0.0.1:27017/teoria_transpiratiei";
+const SENTIMENT_AI_DIR = path.join(__dirname, "local_sentiment_ai");
+const SENTIMENT_ARTIFACT_PATH = path.join(SENTIMENT_AI_DIR, "artifacts", "sentiment_model.joblib");
+const SENTIMENT_TRAIN_SCRIPT = path.join(SENTIMENT_AI_DIR, "train_model.py");
+const SENTIMENT_PREDICT_SCRIPT = path.join(SENTIMENT_AI_DIR, "predict.py");
 
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || "";
@@ -109,6 +121,8 @@ const seededUsers = [
   { username: "user5", password: "user523", role: "User", displayName: "Matei Reader" },
   { username: "user6", password: "user623", role: "User", displayName: "Daria Reader" },
 ];
+
+const sentimentLabels = ["positive", "neutral", "negative"];
 
 const imageSchema = new mongoose.Schema(
   {
@@ -222,7 +236,108 @@ function serializeParagraph(paragraph) {
   };
 }
 
-function serializeArticleDocument(article, userDirectory = new Map(), viewer = null) {
+function summarizeSentimentPredictions(predictions = []) {
+  const summary = { positive: 0, neutral: 0, negative: 0, total: predictions.length };
+
+  for (const prediction of predictions) {
+    if (summary[prediction.label] !== undefined) {
+      summary[prediction.label] += 1;
+    }
+  }
+
+  return summary;
+}
+
+function ensureSentimentModelTrained() {
+  if (fs.existsSync(SENTIMENT_ARTIFACT_PATH)) {
+    return true;
+  }
+
+  const result = spawnSync("python", [SENTIMENT_TRAIN_SCRIPT], {
+    cwd: SENTIMENT_AI_DIR,
+    encoding: "utf-8",
+    timeout: 120000,
+  });
+
+  if (result.status === 0 && fs.existsSync(SENTIMENT_ARTIFACT_PATH)) {
+    return true;
+  }
+
+  console.warn("Local sentiment model could not be trained automatically.");
+  if (result.stderr) {
+    console.warn(result.stderr);
+  }
+
+  return false;
+}
+
+function analyzeSentimentLocally(texts) {
+  if (!Array.isArray(texts) || !texts.length) {
+    return [];
+  }
+
+  const normalizedTexts = texts.map((text) => validation.normalizeString(text));
+  if (!ensureSentimentModelTrained()) {
+    return normalizedTexts.map(() => ({ label: "neutral", confidence: 0 }));
+  }
+
+  const result = spawnSync("python", [SENTIMENT_PREDICT_SCRIPT], {
+    cwd: SENTIMENT_AI_DIR,
+    encoding: "utf-8",
+    timeout: 30000,
+    input: JSON.stringify({ texts: normalizedTexts }),
+  });
+
+  if (result.status !== 0) {
+    console.warn("Local sentiment prediction failed.");
+    if (result.stderr) {
+      console.warn(result.stderr);
+    }
+    return normalizedTexts.map(() => ({ label: "neutral", confidence: 0 }));
+  }
+
+  try {
+    const payload = JSON.parse(result.stdout || "{}");
+    const predictions = Array.isArray(payload.predictions) ? payload.predictions : [];
+    if (predictions.length === normalizedTexts.length) {
+      return predictions.map((prediction) => ({
+        label: sentimentLabels.includes(prediction.label) ? prediction.label : "neutral",
+        confidence: typeof prediction.confidence === "number" ? prediction.confidence : 0,
+      }));
+    }
+  } catch (error) {
+    console.warn("Local sentiment prediction returned invalid JSON.");
+    console.warn(error);
+  }
+
+  return normalizedTexts.map(() => ({ label: "neutral", confidence: 0 }));
+}
+
+function buildSerializedArticleComments(articleComments = [], viewer = null, includeSentiment = false) {
+  const baseComments = viewer
+    ? articleComments.map((comment) => ({
+        id: comment._id.toString(),
+        text: comment.text,
+        authorId: comment.authorId,
+        authorName: comment.authorName,
+        authorRole: comment.authorRole,
+        createdAt: comment.createdAt ? new Date(comment.createdAt).toISOString() : null,
+      }))
+    : [];
+
+  if (!viewer || !includeSentiment || !baseComments.length) {
+    return baseComments;
+  }
+
+  const predictions = analyzeSentimentLocally(baseComments.map((comment) => comment.text));
+  return baseComments.map((comment, index) => ({
+    ...comment,
+    sentiment: predictions[index]?.label || "neutral",
+    sentimentConfidence: predictions[index]?.confidence ?? 0,
+  }));
+}
+
+function serializeArticleDocument(article, userDirectory = new Map(), viewer = null, options = {}) {
   const assignedJournalists = (article.assignedJournalistIds || [])
     .map((id) => userDirectory.get(String(id)))
     .filter(Boolean);
@@ -255,16 +370,11 @@ function serializeArticleDocument(article, userDirectory = new Map(), viewer = n
     createdByRole: article.createdByRole,
     finishedByEditorName: article.finishedByEditorName || "",
     finishedAt: article.finishedAt ? new Date(article.finishedAt).toISOString() : null,
-    articleComments: viewer
-      ? (article.articleComments || []).map((comment) => ({
-          id: comment._id.toString(),
-          text: comment.text,
-          authorId: comment.authorId,
-          authorName: comment.authorName,
-          authorRole: comment.authorRole,
-          createdAt: comment.createdAt ? new Date(comment.createdAt).toISOString() : null,
-        }))
-      : [],
+    articleComments: buildSerializedArticleComments(
+      article.articleComments || [],
+      viewer,
+      Boolean(options.includeCommentSentiment && viewer?.role === "Admin"),
+    ),
     paragraphs: (article.paragraphs || []).map(serializeParagraph),
   };
 }
@@ -544,11 +654,18 @@ async function serializeArticlesWithAssignments(articles) {
 
 function buildArticleStatistics(articles) {
   const finishedArticles = articles.filter((article) => article.status === "finished");
+  const allCommentTexts = finishedArticles.flatMap((article) => (article.articleComments || []).map((comment) => comment.text));
+  const allCommentPredictions = analyzeSentimentLocally(allCommentTexts);
+  let predictionIndex = 0;
 
   const items = finishedArticles.map((article) => {
     const likes = (article.likedByUserIds || []).length;
     const dislikes = (article.dislikedByUserIds || []).length;
     const totalReactions = likes + dislikes;
+    const articleCommentCount = (article.articleComments || []).length;
+    const articlePredictions = allCommentPredictions.slice(predictionIndex, predictionIndex + articleCommentCount);
+    predictionIndex += articleCommentCount;
+    const sentimentSummary = summarizeSentimentPredictions(articlePredictions);
 
     return {
       id: article._id.toString(),
@@ -559,6 +676,8 @@ function buildArticleStatistics(articles) {
       dislikes,
       totalReactions,
       approvalScore: totalReactions ? Number(((likes / totalReactions) * 100).toFixed(1)) : 0,
+      commentCount: articleCommentCount,
+      sentiment: sentimentSummary,
     };
   });
 
@@ -567,9 +686,20 @@ function buildArticleStatistics(articles) {
       accumulator.likes += item.likes;
       accumulator.dislikes += item.dislikes;
       accumulator.totalReactions += item.totalReactions;
+      accumulator.commentCount += item.commentCount;
+      accumulator.sentiment.positive += item.sentiment.positive;
+      accumulator.sentiment.neutral += item.sentiment.neutral;
+      accumulator.sentiment.negative += item.sentiment.negative;
+      accumulator.sentiment.total += item.sentiment.total;
       return accumulator;
     },
-    { likes: 0, dislikes: 0, totalReactions: 0 },
+    {
+      likes: 0,
+      dislikes: 0,
+      totalReactions: 0,
+      commentCount: 0,
+      sentiment: { positive: 0, neutral: 0, negative: 0, total: 0 },
+    },
   );
 
   return {
@@ -745,19 +875,42 @@ async function uploadBufferToCloudinary(fileBuffer, originalName, mimeType) {
   });
 }
 
-function getLanUrls(port) {
+function getLanUrls(port, protocol = "http") {
   const interfaces = os.networkInterfaces();
   const urls = [];
 
   for (const adapter of Object.values(interfaces)) {
     for (const address of adapter || []) {
       if (address.family === "IPv4" && !address.internal) {
-        urls.push(`http://${address.address}:${port}`);
+        urls.push(`${protocol}://${address.address}:${port}`);
       }
     }
   }
 
   return urls;
+}
+
+function getHttpsCredentials() {
+  if (!HTTPS_ENABLED || !HTTPS_KEY_PATH || !HTTPS_CERT_PATH) {
+    return null;
+  }
+
+  const resolvedKeyPath = path.resolve(__dirname, HTTPS_KEY_PATH);
+  const resolvedCertPath = path.resolve(__dirname, HTTPS_CERT_PATH);
+
+  if (!fs.existsSync(resolvedKeyPath) || !fs.existsSync(resolvedCertPath)) {
+    console.warn("HTTPS is enabled but the key/certificate files were not found.");
+    console.warn(`  Key: ${resolvedKeyPath}`);
+    console.warn(`  Cert: ${resolvedCertPath}`);
+    return null;
+  }
+
+  return {
+    key: fs.readFileSync(resolvedKeyPath),
+    cert: fs.readFileSync(resolvedCertPath),
+    resolvedKeyPath,
+    resolvedCertPath,
+  };
 }
 
 function createApp() {
@@ -861,7 +1014,7 @@ function createApp() {
     }
 
     const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
-    res.json(serializeArticleDocument(article, directory, req.user));
+    res.json(serializeArticleDocument(article, directory, req.user, { includeCommentSentiment: true }));
   });
 
   app.post("/api/articles/:id/comments", authenticateRequest, async (req, res) => {
@@ -1385,19 +1538,45 @@ async function startServer() {
   await ensureArticleStructureDefaults();
 
   const app = createApp();
-  app.listen(PORT, HOST, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+  const httpServer = http.createServer(app);
+  const httpsCredentials = getHttpsCredentials();
+  const httpsServer = httpsCredentials ? https.createServer({ key: httpsCredentials.key, cert: httpsCredentials.cert }, app) : null;
 
-    const lanUrls = getLanUrls(PORT);
-    if (lanUrls.length) {
-      console.log("LAN URLs:");
-      lanUrls.forEach((url) => console.log(`  ${url}`));
-    }
-
-    console.log("Using PostgreSQL for users/auth, MongoDB for articles, and Cloudinary for images.");
-    console.log("Seeded users:");
-    seededUsers.forEach((user) => console.log(`  ${user.username} / ${user.password} (${user.role})`));
+  await new Promise((resolve) => {
+    httpServer.listen(PORT, HOST, resolve);
   });
+
+  console.log(`HTTP server running at http://localhost:${PORT}`);
+
+  const httpLanUrls = getLanUrls(PORT, "http");
+  if (httpLanUrls.length) {
+    console.log("HTTP LAN URLs:");
+    httpLanUrls.forEach((url) => console.log(`  ${url}`));
+  }
+
+  if (httpsServer) {
+    await new Promise((resolve) => {
+      httpsServer.listen(HTTPS_PORT, HOST, resolve);
+    });
+
+    console.log(`HTTPS server running at https://localhost:${HTTPS_PORT}`);
+    console.log(`HTTPS key: ${httpsCredentials.resolvedKeyPath}`);
+    console.log(`HTTPS cert: ${httpsCredentials.resolvedCertPath}`);
+
+    const httpsLanUrls = getLanUrls(HTTPS_PORT, "https");
+    if (httpsLanUrls.length) {
+      console.log("HTTPS LAN URLs:");
+      httpsLanUrls.forEach((url) => console.log(`  ${url}`));
+    }
+  } else if (HTTPS_ENABLED) {
+    console.log("HTTPS was requested but could not be started. Falling back to HTTP only.");
+  }
+
+  console.log("Using PostgreSQL for users/auth, MongoDB for articles, and Cloudinary for images.");
+  console.log("Seeded users:");
+  seededUsers.forEach((user) => console.log(`  ${user.username} / ${user.password} (${user.role})`));
+
+  return { app, httpServer, httpsServer };
 }
 
 module.exports = {

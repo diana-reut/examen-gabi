@@ -1,0 +1,16 @@
+{
+  "trained_at": "2026-06-13T15:32:30.346250+00:00",
+  "dataset_path": "D:\\gabi examen\\local_sentiment_ai\\data\\comments_sentiment_dataset.csv",
+  "sample_count": 75,
+  "label_distribution": {
+    "positive": 25,
+    "negative": 25,
+    "neutral": 25
+  },
+  "labels": [
+    "negative",
+    "neutral",
+    "positive"
+  ],
+  "model_path": "D:\\gabi examen\\local_sentiment_ai\\artifacts\\sentiment_model.joblib"
+}

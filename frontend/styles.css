@@ -166,6 +166,9 @@ body.role-user { --bg:#eef9ee; --bg-secondary:#f7fff7; --role-tint:rgba(40,140,5
 }
 .comment-status.unresolved { color: #9f2f2f; }
 .comment-status.resolved { color: #288c3a; }
+.comment-status.positive { color: #288c3a; }
+.comment-status.neutral { color: #8b6f1c; }
+.comment-status.negative { color: #9f2f2f; }
 .solve-comment-btn {
   margin-top: 8px;
 }
@@ -232,6 +235,9 @@ body.role-user { --bg:#eef9ee; --bg-secondary:#f7fff7; --role-tint:rgba(40,140,5
 }
 .stats-swatch.like { background: #288c3a; }
 .stats-swatch.dislike { background: #9f2f2f; }
+.stats-swatch.sentiment-positive { background: #288c3a; }
+.stats-swatch.sentiment-neutral { background: #b38f11; }
+.stats-swatch.sentiment-negative { background: #9f2f2f; }
 .stats-donut-shell {
   display: flex;
   justify-content: center;
@@ -256,6 +262,18 @@ body.role-user { --bg:#eef9ee; --bg-secondary:#f7fff7; --role-tint:rgba(40,140,5
   font-size: 1.25rem;
   font-weight: 800;
 }
+.stats-sentiment-stack {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(20,35,59,.08);
+  margin: 10px 0 14px;
+}
+.stats-sentiment-positive { background: linear-gradient(90deg, #62b36f, #288c3a); }
+.stats-sentiment-neutral { background: linear-gradient(90deg, #dcc56d, #b38f11); }
+.stats-sentiment-negative { background: linear-gradient(90deg, #d77a7a, #9f2f2f); }
 .stats-row {
   display: flex;
   align-items: flex-start;

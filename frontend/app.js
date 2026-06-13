@@ -398,7 +398,14 @@ function renderArticleComments(article) {
         .map(
           (comment) => `
             <div class="comment-item article-comment-item">
-              <div class="comment-meta">${comment.authorName} (${comment.authorRole})</div>
+              <div class="comment-meta">
+                ${comment.authorName} (${comment.authorRole})
+                ${
+                  comment.sentiment
+                    ? `<span class="comment-status ${comment.sentiment}">${comment.sentiment}</span>`
+                    : ""
+                }
+              </div>
               <div>${comment.text}</div>
             </div>
           `,
@@ -447,6 +454,7 @@ function renderStatistics(statistics) {
                   <strong>${item.title || "Untitled article"}</strong>
                   <div class="stats-subline">${item.category || "Uncategorized"} · ${item.status}</div>
                   ${renderBar(item.likes, item.dislikes)}
+                  <div class="stats-subline">Comments: ${item.commentCount} · Positive: ${item.sentiment.positive} · Neutral: ${item.sentiment.neutral} · Negative: ${item.sentiment.negative}</div>
                 </div>
                 <div class="stats-metrics">
                   <span>Likes: ${item.likes}</span>
@@ -480,6 +488,23 @@ function renderStatistics(statistics) {
             <div class="stats-donut-center">${statistics.totals.totalReactions || 0}</div>
           </div>
         </div>
+      </div>
+      <div class="stats-card">
+        <h3>Comment sentiment</h3>
+        <div class="stats-legend">
+          <span class="stats-legend-item"><span class="stats-swatch sentiment-positive"></span>Positive</span>
+          <span class="stats-legend-item"><span class="stats-swatch sentiment-neutral"></span>Neutral</span>
+          <span class="stats-legend-item"><span class="stats-swatch sentiment-negative"></span>Negative</span>
+        </div>
+        <div class="stats-sentiment-stack" aria-hidden="true">
+          <div class="stats-sentiment-positive" style="width:${statistics.totals.sentiment.total ? (statistics.totals.sentiment.positive / statistics.totals.sentiment.total) * 100 : 0}%"></div>
+          <div class="stats-sentiment-neutral" style="width:${statistics.totals.sentiment.total ? (statistics.totals.sentiment.neutral / statistics.totals.sentiment.total) * 100 : 0}%"></div>
+          <div class="stats-sentiment-negative" style="width:${statistics.totals.sentiment.total ? (statistics.totals.sentiment.negative / statistics.totals.sentiment.total) * 100 : 0}%"></div>
+        </div>
+        <p>Total analyzed comments: ${statistics.totals.sentiment.total}</p>
+        <p>Positive: ${statistics.totals.sentiment.positive}</p>
+        <p>Neutral: ${statistics.totals.sentiment.neutral}</p>
+        <p>Negative: ${statistics.totals.sentiment.negative}</p>
       </div>
       <div class="stats-card">
         <h3>Most liked</h3>

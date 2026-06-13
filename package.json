@@ -8,6 +8,7 @@
     "dev": "node server.js",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
+    "https:cert": "powershell -ExecutionPolicy Bypass -File .\\scripts\\generate-dev-cert.ps1",
     "test": "node --test"
   },
   "repository": {
