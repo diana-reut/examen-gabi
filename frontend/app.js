@@ -388,6 +388,36 @@ function renderReactionSummary(article) {
   `;
 }
 
+function renderArticleComments(article) {
+  if (!currentUser) {
+    return "";
+  }
+
+  const commentsHtml = article.articleComments?.length
+    ? article.articleComments
+        .map(
+          (comment) => `
+            <div class="comment-item article-comment-item">
+              <div class="comment-meta">${comment.authorName} (${comment.authorRole})</div>
+              <div>${comment.text}</div>
+            </div>
+          `,
+        )
+        .join("")
+    : '<p class="empty-inline">No article comments yet.</p>';
+
+  return `
+    <section class="article-comments-shell">
+      <div class="detail-assignees"><strong>Article comments</strong></div>
+      <div class="comments-list">${commentsHtml}</div>
+      <form class="article-comment-form">
+        <textarea name="articleCommentText" rows="3" maxlength="${validation.limits.comment}" placeholder="Add a comment for this article..."></textarea>
+        <button class="secondary-button" type="submit">Add article comment</button>
+      </form>
+    </section>
+  `;
+}
+
 function renderStatistics(statistics) {
   if (!statistics) {
     statisticsContent.innerHTML = "";
@@ -605,6 +635,7 @@ function renderDetail(article) {
           : '<p class="workflow-ok">All editor comments are solved. This article can now be finished.</p>'
         : ""
     }
+    ${renderArticleComments(article)}
     <div class="paragraph-list">${paragraphsHtml}</div>
   `;
 }
@@ -712,6 +743,34 @@ function attachDetailInteractions() {
         });
         await loadArticles(article.id);
         showFeedback("Comment added.");
+      } catch (error) {
+        showFeedback(error.message);
+      }
+    });
+  });
+
+  articleDetail.querySelectorAll(".article-comment-form").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const article = getSelectedArticle();
+      if (!article) {
+        return;
+      }
+
+      const commentText = validation.normalizeString(form.querySelector("textarea").value);
+      const commentError = getValidationMessage(validation.validateCommentPayload({ text: commentText }));
+      if (commentError) {
+        showFeedback(commentError);
+        return;
+      }
+
+      try {
+        await apiRequest(`/api/articles/${article.id}/comments`, {
+          method: "POST",
+          body: JSON.stringify({ text: commentText }),
+        });
+        await loadArticles(article.id);
+        showFeedback("Article comment added.");
       } catch (error) {
         showFeedback(error.message);
       }

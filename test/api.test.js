@@ -133,6 +133,87 @@ test("PATCH /api/articles/:id/reaction rejects invalid reactions", async () => {
   assert.equal(response.body.message, 'Field "reaction" must be "like", "dislike", or "none".');
 });
 
+test("POST /api/articles/:id/comments allows logged-in viewers to add article comments", async () => {
+  const token = signToken({ sub: "20", username: "user", role: "User", displayName: "Reader User" });
+  const saveCalls = [];
+  const article = {
+    _id: { toString: () => "article-4" },
+    status: "finished",
+    articleComments: [],
+    assignedJournalistIds: ["7"],
+    createdByUserId: "2",
+    articleComments: [],
+    save: async () => {
+      saveCalls.push("saved");
+    },
+  };
+
+  article.articleComments.push = function push(comment) {
+    Array.prototype.push.call(this, {
+      _id: { toString: () => "comment-1" },
+      ...comment,
+    });
+    return this.length;
+  };
+
+  Article.findById = async () => article;
+
+  const app = createApp();
+  const response = await request(app)
+    .post("/api/articles/article-4/comments")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ text: "Great article." });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.text, "Great article.");
+  assert.equal(response.body.authorRole, "User");
+  assert.equal(saveCalls.length, 1);
+});
+
+test("GET /api/articles/:id hides article comments from guests", async () => {
+  const article = {
+    _id: { toString: () => "article-5" },
+    title: "Finished article",
+    category: "Campus",
+    author: "Author",
+    date: new Date("2026-06-13"),
+    summary: "Summary",
+    status: "finished",
+    likedByUserIds: [],
+    dislikedByUserIds: [],
+    articleComments: [
+      {
+        _id: { toString: () => "comment-2" },
+        text: "Visible only when logged in",
+        authorId: "20",
+        authorName: "Reader User",
+        authorRole: "User",
+        createdAt: new Date("2026-06-13"),
+      },
+    ],
+    assignedJournalistIds: ["7"],
+    createdByUserId: "2",
+    createdByName: "Editor",
+    createdByRole: "Editor",
+    finishedByEditorName: "Editor",
+    finishedAt: new Date("2026-06-13"),
+    paragraphs: [],
+  };
+
+  Article.findById = () => ({
+    lean: async () => article,
+  });
+  postgresPool.query = async () => ({
+    rows: [{ id: 7, username: "journalist2", role: "Journalist", display_name: "Ana Journalist" }],
+  });
+
+  const app = createApp();
+  const response = await request(app).get("/api/articles/article-5");
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.articleComments, []);
+});
+
 test("POST /api/articles/:id/paragraphs rejects empty paragraph text", async () => {
   const token = signToken({ sub: "7", username: "journalist2", role: "Journalist", displayName: "Ana Journalist" });
 

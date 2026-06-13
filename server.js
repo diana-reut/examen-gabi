@@ -160,6 +160,7 @@ const articleSchema = new mongoose.Schema(
     status: { type: String, enum: ["draft", "finished"], default: "draft" },
     likedByUserIds: { type: [String], default: [] },
     dislikedByUserIds: { type: [String], default: [] },
+    articleComments: { type: [commentSchema], default: [] },
     paragraphs: { type: [paragraphSchema], default: [] },
     createdByUserId: { type: String, default: "" },
     createdByName: { type: String, default: "" },
@@ -254,6 +255,16 @@ function serializeArticleDocument(article, userDirectory = new Map(), viewer = n
     createdByRole: article.createdByRole,
     finishedByEditorName: article.finishedByEditorName || "",
     finishedAt: article.finishedAt ? new Date(article.finishedAt).toISOString() : null,
+    articleComments: viewer
+      ? (article.articleComments || []).map((comment) => ({
+          id: comment._id.toString(),
+          text: comment.text,
+          authorId: comment.authorId,
+          authorName: comment.authorName,
+          authorRole: comment.authorRole,
+          createdAt: comment.createdAt ? new Date(comment.createdAt).toISOString() : null,
+        }))
+      : [],
     paragraphs: (article.paragraphs || []).map(serializeParagraph),
   };
 }
@@ -451,6 +462,10 @@ function canCommentOnParagraph(article, user) {
   }
 
   return user.role === "Editor" && article.createdByUserId === String(user.sub);
+}
+
+function canCommentOnArticle(article, user) {
+  return Boolean(user) && canViewArticle(article, user);
 }
 
 async function ensurePostgresSchema() {
@@ -652,6 +667,11 @@ async function ensureArticleStructureDefaults() {
       changed = true;
     }
 
+    if (!Array.isArray(article.articleComments)) {
+      article.articleComments = [];
+      changed = true;
+    }
+
     if (!article.createdByUserId && fallbackEditor) {
       article.createdByUserId = fallbackEditor.id;
       article.createdByName = fallbackEditor.displayName;
@@ -842,6 +862,50 @@ function createApp() {
 
     const directory = await getUserDirectoryByIds(article.assignedJournalistIds || []);
     res.json(serializeArticleDocument(article, directory, req.user));
+  });
+
+  app.post("/api/articles/:id/comments", authenticateRequest, async (req, res) => {
+    const article = await Article.findById(req.params.id);
+
+    if (!article) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    if (!canCommentOnArticle(article, req.user)) {
+      res.status(403).json({ message: "You can only comment on articles that you can view." });
+      return;
+    }
+
+    const text = validation.normalizeString(req.body.text);
+    const commentValidationError = validation.firstError(validation.validateCommentPayload({ text }));
+    if (commentValidationError) {
+      res.status(400).json({ message: commentValidationError });
+      return;
+    }
+
+    article.articleComments.push({
+      text,
+      authorId: String(req.user.sub),
+      authorName: req.user.displayName,
+      authorRole: req.user.role,
+      createdAt: new Date(),
+      resolved: false,
+      resolvedAt: null,
+      resolvedById: "",
+      resolvedByName: "",
+    });
+
+    await article.save();
+    const savedComment = article.articleComments[article.articleComments.length - 1];
+    res.status(201).json({
+      id: savedComment._id.toString(),
+      text: savedComment.text,
+      authorId: savedComment.authorId,
+      authorName: savedComment.authorName,
+      authorRole: savedComment.authorRole,
+      createdAt: new Date(savedComment.createdAt).toISOString(),
+    });
   });
 
   app.patch("/api/articles/:id/reaction", authenticateRequest, async (req, res) => {

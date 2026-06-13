@@ -134,6 +134,9 @@ body.role-user { --bg:#eef9ee; --bg-secondary:#f7fff7; --role-tint:rgba(40,140,5
 .detail-summary { font-size:1.05rem; line-height:1.75; margin:18px 0 24px; }
 .detail-content { white-space:pre-wrap; line-height:1.9; font-size:1rem; }
 .detail-placeholder { text-align:center; font-size:1rem; }
+.article-comments-shell { margin: 22px 0 6px; }
+.article-comment-form { display:grid; gap:10px; margin-top:14px; }
+.article-comment-item { background: rgba(20,35,59,.06); }
 .paragraph-list { display:grid; gap:18px; margin-top:24px; }
 .paragraph-card { padding:18px; border-radius:20px; background:var(--paper); border:1px solid rgba(20,35,59,.08); box-shadow:var(--shadow); }
 .paragraph-card.draggable { cursor: grab; }
