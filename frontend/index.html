@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ro">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -17,7 +17,7 @@
         <div class="brand-copy">
           <p class="eyebrow">Online Journal</p>
           <h1>Perspiration Theory / Teoria Transpiratiei</h1>
-          <p class="hero-text">Jurnal online cu articole generate local, afisate intr-o experienta de lectura simpla si clara.</p>
+          <p class="hero-text">An in-memory editorial workspace for reading and managing newspaper articles across your local network.</p>
         </div>
       </div>
     </header>
@@ -29,19 +29,78 @@
             <p class="section-label">Articles</p>
             <h2>Latest Stories</h2>
           </div>
-          <span id="articleCount" class="count-badge">0 articles</span>
+          <div class="toolbar">
+            <span id="articleCount" class="count-badge">0 articles</span>
+            <button id="createArticleBtn" class="secondary-button" type="button">New article</button>
+          </div>
         </div>
+        <div id="feedbackBanner" class="feedback-banner hidden" role="status" aria-live="polite"></div>
         <div id="articleList" class="stacked-article-list" aria-label="Article list"></div>
       </aside>
 
       <section class="detail-column">
+        <div class="detail-actions">
+          <button id="editArticleBtn" class="secondary-button" type="button">Edit article</button>
+          <button id="deleteArticleBtn" class="danger-button" type="button">Delete article</button>
+        </div>
+
         <article id="articleDetail" class="detail-page">
           <p class="detail-placeholder">Select an article to read it here.</p>
         </article>
+
+        <section class="editor-shell">
+          <div class="section-heading editor-heading">
+            <div>
+              <p class="section-label">Editor</p>
+              <h2 id="formHeading">Create Article</h2>
+            </div>
+            <button id="cancelEditBtn" class="ghost-button hidden" type="button">Cancel edit</button>
+          </div>
+
+          <form id="articleForm" class="article-form">
+            <input id="articleId" type="hidden">
+
+            <label>
+              Title
+              <input id="titleInput" name="title" type="text" required>
+            </label>
+
+            <label>
+              Category
+              <input id="categoryInput" name="category" type="text" required>
+            </label>
+
+            <div class="field-row">
+              <label>
+                Author
+                <input id="authorInput" name="author" type="text" required>
+              </label>
+
+              <label>
+                Publish date
+                <input id="dateInput" name="date" type="date" required>
+              </label>
+            </div>
+
+            <label>
+              Summary
+              <textarea id="summaryInput" name="summary" rows="3" required></textarea>
+            </label>
+
+            <label>
+              Full content
+              <textarea id="contentInput" name="content" rows="8" required></textarea>
+            </label>
+
+            <div class="form-actions">
+              <button id="saveArticleBtn" class="primary-button" type="submit">Save article</button>
+            </div>
+          </form>
+        </section>
       </section>
     </main>
   </div>
 
-  <script type="module" src="./app.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
