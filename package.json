@@ -1,11 +1,13 @@
 {
   "name": "gabi-examen",
   "version": "1.0.0",
-  "description": "LAN-accessible in-memory CRUD app for Teoria Transpiratiei",
+  "description": "LAN-accessible Teoria Transpiratiei app with PostgreSQL, MongoDB, and role-based auth",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
     "test": "echo \"No tests configured\""
   },
   "repository": {
@@ -22,6 +24,11 @@
   "homepage": "https://github.com/diana-reut/examen-gabi#readme",
   "dependencies": {
     "@faker-js/faker": "^10.4.0",
-    "express": "^5.2.1"
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.7.0",
+    "pg": "^8.21.0"
   }
 }

@@ -1,9 +1,19 @@
+const loginForm = document.getElementById("loginForm");
+const logoutBtn = document.getElementById("logoutBtn");
+const usernameInput = document.getElementById("usernameInput");
+const passwordInput = document.getElementById("passwordInput");
+const userPanel = document.getElementById("userPanel");
+const roleBadge = document.getElementById("roleBadge");
+const userIdentity = document.getElementById("userIdentity");
+const permissionSummary = document.getElementById("permissionSummary");
+
 const articleList = document.getElementById("articleList");
 const articleDetail = document.getElementById("articleDetail");
 const articleCounter = document.getElementById("articleCount");
 const feedbackBanner = document.getElementById("feedbackBanner");
 
 const articleForm = document.getElementById("articleForm");
+const editorShell = document.getElementById("editorShell");
 const formHeading = document.getElementById("formHeading");
 const createArticleBtn = document.getElementById("createArticleBtn");
 const editArticleBtn = document.getElementById("editArticleBtn");
@@ -20,6 +30,16 @@ const formFields = {
   content: document.getElementById("contentInput"),
 };
 
+const roleClassNames = {
+  Admin: "role-admin",
+  Editor: "role-editor",
+  Journalist: "role-journalist",
+  User: "role-user",
+};
+
+let authToken = localStorage.getItem("teoriaToken") || "";
+let currentUser = null;
+let currentPermissions = null;
 let articles = [];
 let selectedArticleId = null;
 let editingArticleId = null;
@@ -28,6 +48,7 @@ async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
     headers: {
       "Content-Type": "application/json",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -61,10 +82,6 @@ function formatDate(value) {
   });
 }
 
-function getSelectedArticle() {
-  return articles.find((article) => article.id === selectedArticleId) ?? null;
-}
-
 function showFeedback(message) {
   feedbackBanner.textContent = message;
   feedbackBanner.classList.remove("hidden");
@@ -82,7 +99,101 @@ function scrollToTop() {
   });
 }
 
+function getSelectedArticle() {
+  return articles.find((article) => article.id === selectedArticleId) ?? null;
+}
+
+function setRoleTheme(role) {
+  document.body.className = roleClassNames[role] || "role-anonymous";
+}
+
+function describePermissions(permissions) {
+  const actions = [];
+
+  if (permissions.canRead) {
+    actions.push("read");
+  }
+  if (permissions.canCreate) {
+    actions.push("create");
+  }
+  if (permissions.canEdit) {
+    actions.push("edit");
+  }
+  if (permissions.canDelete) {
+    actions.push("delete");
+  }
+
+  return actions.length
+    ? `This role can ${actions.join(", ")} articles.`
+    : "This role has no article permissions.";
+}
+
+function applyPermissions() {
+  const permissions = currentPermissions || {
+    canCreate: false,
+    canEdit: false,
+    canDelete: false,
+    canRead: false,
+  };
+
+  createArticleBtn.classList.toggle("hidden", !permissions.canCreate);
+  editArticleBtn.classList.toggle("hidden", !permissions.canEdit);
+  deleteArticleBtn.classList.toggle("hidden", !permissions.canDelete);
+  editorShell.classList.toggle("hidden", !(permissions.canCreate || permissions.canEdit));
+
+  const articleSelected = Boolean(getSelectedArticle());
+  editArticleBtn.disabled = !permissions.canEdit || !articleSelected;
+  deleteArticleBtn.disabled = !permissions.canDelete || !articleSelected;
+
+  if (!(permissions.canCreate || permissions.canEdit)) {
+    setFormMode("create");
+  }
+}
+
+function setAuthenticatedState(user, permissions) {
+  currentUser = user;
+  currentPermissions = permissions;
+  roleBadge.textContent = user.role;
+  userIdentity.textContent = `${user.displayName} (${user.username})`;
+  permissionSummary.textContent = describePermissions(permissions);
+  userPanel.classList.remove("hidden");
+  logoutBtn.classList.remove("hidden");
+  loginForm.classList.add("hidden");
+  setRoleTheme(user.role);
+  applyPermissions();
+}
+
+function resetAuthenticatedState() {
+  currentUser = null;
+  currentPermissions = null;
+  authToken = "";
+  localStorage.removeItem("teoriaToken");
+  userPanel.classList.add("hidden");
+  logoutBtn.classList.add("hidden");
+  loginForm.classList.remove("hidden");
+  setRoleTheme(null);
+  articleList.innerHTML = "";
+  articleCounter.textContent = "0 articles";
+  articleDetail.innerHTML = '<p class="detail-placeholder">Log in to load articles.</p>';
+  editorShell.classList.add("hidden");
+  createArticleBtn.classList.add("hidden");
+  editArticleBtn.classList.add("hidden");
+  deleteArticleBtn.classList.add("hidden");
+  selectedArticleId = null;
+  articles = [];
+  setFormMode("create");
+}
+
 function setFormMode(mode, article = null) {
+  const canOpenForm = currentPermissions && (currentPermissions.canCreate || currentPermissions.canEdit);
+
+  if (!canOpenForm) {
+    articleForm.reset();
+    editingArticleId = null;
+    formFields.id.value = "";
+    return;
+  }
+
   if (mode === "edit" && article) {
     formHeading.textContent = "Edit Article";
     cancelEditBtn.classList.remove("hidden");
@@ -129,7 +240,10 @@ function renderList() {
         selectedArticleId = articleDetails.id;
         renderList();
         renderDetail(articleDetails);
-        setFormMode("create");
+        applyPermissions();
+        if (!editingArticleId) {
+          setFormMode("create");
+        }
         scrollToTop();
         clearFeedback();
       } catch (error) {
@@ -143,14 +257,10 @@ function renderList() {
 
 function renderDetail(article) {
   if (!article) {
-    articleDetail.innerHTML = '<p class="detail-placeholder">Create or select an article to see it here.</p>';
-    editArticleBtn.disabled = true;
-    deleteArticleBtn.disabled = true;
+    articleDetail.innerHTML = '<p class="detail-placeholder">No article is selected yet.</p>';
+    applyPermissions();
     return;
   }
-
-  editArticleBtn.disabled = false;
-  deleteArticleBtn.disabled = false;
 
   articleDetail.innerHTML = `
     <div class="meta-pill">${article.category}</div>
@@ -162,6 +272,8 @@ function renderDetail(article) {
     <p class="detail-summary">${article.summary}</p>
     <div class="detail-content">${article.content}</div>
   `;
+
+  applyPermissions();
 }
 
 async function loadArticles(preferredArticleId = null) {
@@ -193,15 +305,68 @@ function getFormPayload() {
   };
 }
 
+async function restoreSession() {
+  if (!authToken) {
+    resetAuthenticatedState();
+    return;
+  }
+
+  try {
+    const payload = await apiRequest("/api/auth/me");
+    setAuthenticatedState(payload.user, payload.permissions);
+    await loadArticles();
+    setFormMode("create");
+    clearFeedback();
+  } catch (_error) {
+    resetAuthenticatedState();
+  }
+}
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  try {
+    const payload = await apiRequest("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        username: usernameInput.value.trim(),
+        password: passwordInput.value,
+      }),
+    });
+
+    authToken = payload.token;
+    localStorage.setItem("teoriaToken", authToken);
+    setAuthenticatedState(payload.user, payload.permissions);
+    await loadArticles();
+    setFormMode("create");
+    loginForm.reset();
+    clearFeedback();
+  } catch (error) {
+    showFeedback(error.message);
+  }
+});
+
+logoutBtn.addEventListener("click", () => {
+  resetAuthenticatedState();
+  clearFeedback();
+});
+
 createArticleBtn.addEventListener("click", () => {
+  if (!currentPermissions?.canCreate) {
+    return;
+  }
+
   setFormMode("create");
   formFields.title.focus();
   clearFeedback();
 });
 
 editArticleBtn.addEventListener("click", async () => {
-  const article = getSelectedArticle();
+  if (!currentPermissions?.canEdit) {
+    return;
+  }
 
+  const article = getSelectedArticle();
   if (!article) {
     return;
   }
@@ -222,8 +387,11 @@ cancelEditBtn.addEventListener("click", () => {
 });
 
 deleteArticleBtn.addEventListener("click", async () => {
-  const article = getSelectedArticle();
+  if (!currentPermissions?.canDelete) {
+    return;
+  }
 
+  const article = getSelectedArticle();
   if (!article) {
     return;
   }
@@ -247,6 +415,12 @@ articleForm.addEventListener("submit", async (event) => {
 
   const payload = getFormPayload();
   const isEditing = Boolean(editingArticleId);
+  const allowed = isEditing ? currentPermissions?.canEdit : currentPermissions?.canCreate;
+
+  if (!allowed) {
+    showFeedback("You do not have permission to perform this action.");
+    return;
+  }
 
   try {
     const savedArticle = await apiRequest(
@@ -266,14 +440,4 @@ articleForm.addEventListener("submit", async (event) => {
   }
 });
 
-async function initializeApp() {
-  try {
-    await loadArticles();
-    setFormMode("create");
-    clearFeedback();
-  } catch (error) {
-    showFeedback(error.message);
-  }
-}
-
-initializeApp();
+restoreSession();

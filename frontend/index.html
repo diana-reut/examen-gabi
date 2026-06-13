@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css">
 </head>
-<body>
+<body class="role-anonymous">
   <div class="page-shell">
     <header class="hero">
       <div class="brand-lockup">
@@ -17,10 +17,58 @@
         <div class="brand-copy">
           <p class="eyebrow">Online Journal</p>
           <h1>Perspiration Theory / Teoria Transpiratiei</h1>
-          <p class="hero-text">An in-memory editorial workspace for reading and managing newspaper articles across your local network.</p>
+          <p class="hero-text">Persistent editorial workspace with PostgreSQL authentication, MongoDB-backed articles, and LAN-ready access.</p>
         </div>
       </div>
     </header>
+
+    <section class="auth-shell">
+      <div class="auth-card">
+        <div class="section-heading auth-heading">
+          <div>
+            <p class="section-label">Authentication</p>
+            <h2>Sign In</h2>
+          </div>
+          <button id="logoutBtn" class="ghost-button hidden" type="button">Logout</button>
+        </div>
+
+        <form id="loginForm" class="login-form">
+          <div class="field-row">
+            <label>
+              Username
+              <input id="usernameInput" name="username" type="text" required>
+            </label>
+
+            <label>
+              Password
+              <input id="passwordInput" name="password" type="password" required>
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button class="primary-button" type="submit">Login</button>
+          </div>
+        </form>
+
+        <div id="userPanel" class="user-panel hidden">
+          <div class="user-badge-row">
+            <span id="roleBadge" class="role-badge">Role</span>
+            <span id="userIdentity" class="user-identity"></span>
+          </div>
+          <p id="permissionSummary" class="permission-summary"></p>
+        </div>
+
+        <div class="seeded-users">
+          <p class="seeded-title">Seeded accounts</p>
+          <div class="seeded-grid">
+            <div><strong>Admin</strong><span>admin / admin123</span></div>
+            <div><strong>Editor</strong><span>editor / editor123</span></div>
+            <div><strong>Journalist</strong><span>journalist / journalist123</span></div>
+            <div><strong>User</strong><span>user / user123</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <main class="newspaper-layout">
       <aside class="articles-column">
@@ -31,7 +79,7 @@
           </div>
           <div class="toolbar">
             <span id="articleCount" class="count-badge">0 articles</span>
-            <button id="createArticleBtn" class="secondary-button" type="button">New article</button>
+            <button id="createArticleBtn" class="secondary-button hidden" type="button">New article</button>
           </div>
         </div>
         <div id="feedbackBanner" class="feedback-banner hidden" role="status" aria-live="polite"></div>
@@ -40,15 +88,15 @@
 
       <section class="detail-column">
         <div class="detail-actions">
-          <button id="editArticleBtn" class="secondary-button" type="button">Edit article</button>
-          <button id="deleteArticleBtn" class="danger-button" type="button">Delete article</button>
+          <button id="editArticleBtn" class="secondary-button hidden" type="button">Edit article</button>
+          <button id="deleteArticleBtn" class="danger-button hidden" type="button">Delete article</button>
         </div>
 
         <article id="articleDetail" class="detail-page">
-          <p class="detail-placeholder">Select an article to read it here.</p>
+          <p class="detail-placeholder">Log in to load articles.</p>
         </article>
 
-        <section class="editor-shell">
+        <section id="editorShell" class="editor-shell hidden">
           <div class="section-heading editor-heading">
             <div>
               <p class="section-label">Editor</p>

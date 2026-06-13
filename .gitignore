@@ -1,2 +1,11 @@
 node_modules/
 npm-debug.log*
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+dist/
+build/
+.DS_Store
+Thumbs.db
