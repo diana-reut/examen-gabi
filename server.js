@@ -652,6 +652,146 @@ async function serializeArticlesWithAssignments(articles) {
   return articles.map((article) => serializeArticleDocument(article, directory));
 }
 
+const recommendationStopWords = new Set([
+  "a",
+  "about",
+  "al",
+  "ale",
+  "and",
+  "are",
+  "as",
+  "at",
+  "cu",
+  "de",
+  "din",
+  "este",
+  "for",
+  "in",
+  "la",
+  "of",
+  "on",
+  "pe",
+  "si",
+  "sunt",
+  "the",
+  "to",
+  "un",
+  "unei",
+  "unor",
+]);
+
+function tokenizeRecommendationText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .match(/[a-z0-9]+/g)
+    ?.filter((token) => token.length > 2 && !recommendationStopWords.has(token)) || [];
+}
+
+function addWeightedTokens(targetMap, text, weight) {
+  const tokens = tokenizeRecommendationText(text);
+  for (const token of tokens) {
+    targetMap.set(token, (targetMap.get(token) || 0) + weight);
+  }
+}
+
+function buildArticleKeywordVector(article) {
+  const vector = new Map();
+  addWeightedTokens(vector, article.title, 3);
+  addWeightedTokens(vector, article.category, 2);
+  addWeightedTokens(vector, article.summary, 1);
+
+  for (const paragraph of article.paragraphs || []) {
+    addWeightedTokens(vector, paragraph.text, 1);
+  }
+
+  return vector;
+}
+
+function mapToSortedEntries(map, limit = Infinity) {
+  return [...map.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([term, weight]) => ({ term, weight }));
+}
+
+function buildUserLikeProfile(articles, userId) {
+  const profile = new Map();
+  const likedArticles = articles.filter((article) => (article.likedByUserIds || []).map(String).includes(String(userId)));
+
+  for (const article of likedArticles) {
+    const vector = buildArticleKeywordVector(article);
+    for (const [term, weight] of vector.entries()) {
+      profile.set(term, (profile.get(term) || 0) + weight);
+    }
+  }
+
+  return {
+    likedArticles,
+    profile,
+  };
+}
+
+function buildSimpleContentRecommendations(articles, userId, limit = 5) {
+  const finishedArticles = articles.filter((article) => article.status === "finished");
+  const { likedArticles, profile } = buildUserLikeProfile(finishedArticles, userId);
+  const reactedArticleIds = new Set(
+    finishedArticles
+      .filter((article) => {
+        const normalizedLikes = (article.likedByUserIds || []).map(String);
+        const normalizedDislikes = (article.dislikedByUserIds || []).map(String);
+        return normalizedLikes.includes(String(userId)) || normalizedDislikes.includes(String(userId));
+      })
+      .map((article) => article._id.toString()),
+  );
+
+  if (!likedArticles.length) {
+    return {
+      profileTerms: [],
+      recommendations: [],
+    };
+  }
+
+  const recommendations = finishedArticles
+    .filter((article) => !reactedArticleIds.has(article._id.toString()))
+    .map((article) => {
+      const articleVector = buildArticleKeywordVector(article);
+      let score = 0;
+      const matchedTerms = new Map();
+
+      for (const [term, articleWeight] of articleVector.entries()) {
+        const profileWeight = profile.get(term) || 0;
+        if (!profileWeight) {
+          continue;
+        }
+
+        const overlapScore = profileWeight * articleWeight;
+        score += overlapScore;
+        matchedTerms.set(term, overlapScore);
+      }
+
+      return {
+        id: article._id.toString(),
+        title: article.title,
+        category: article.category,
+        summary: article.summary,
+        likes: (article.likedByUserIds || []).length,
+        dislikes: (article.dislikedByUserIds || []).length,
+        score,
+        matchedTerms: mapToSortedEntries(matchedTerms, 5).map((item) => item.term),
+      };
+    })
+    .filter((article) => article.score > 0)
+    .sort((left, right) => right.score - left.score || right.likes - left.likes || left.title.localeCompare(right.title))
+    .slice(0, limit);
+
+  return {
+    profileTerms: mapToSortedEntries(profile, 8),
+    recommendations,
+  };
+}
+
 function buildArticleStatistics(articles) {
   const finishedArticles = articles.filter((article) => article.status === "finished");
   const allCommentTexts = finishedArticles.flatMap((article) => (article.articleComments || []).map((comment) => comment.text));
@@ -982,6 +1122,16 @@ function createApp() {
 
     const articles = await Article.find().sort({ date: -1, createdAt: -1 }).lean();
     res.json(buildArticleStatistics(articles));
+  });
+
+  app.get("/api/recommendations", authenticateRequest, async (req, res) => {
+    if (req.user.role !== "User") {
+      res.status(403).json({ message: "Only readers receive personalized recommendations." });
+      return;
+    }
+
+    const articles = await Article.find({ status: "finished" }).sort({ date: -1, createdAt: -1 }).lean();
+    res.json(buildSimpleContentRecommendations(articles, req.user.sub));
   });
 
   app.get("/api/articles", authenticateRequestIfPresent, async (req, res) => {
@@ -1586,6 +1736,7 @@ module.exports = {
   postgresPool,
   seededUsers,
   buildArticleStatistics,
+  buildSimpleContentRecommendations,
   validateArticleCreatePayload,
   validateArticleManagePayload,
   validateParagraphPayload,

@@ -16,6 +16,8 @@ const createArticleShortcutBtn = document.getElementById("createArticleShortcutB
 const statisticsBtn = document.getElementById("statisticsBtn");
 const statisticsShell = document.getElementById("statisticsShell");
 const statisticsContent = document.getElementById("statisticsContent");
+const recommendationsShell = document.getElementById("recommendationsShell");
+const recommendationsContent = document.getElementById("recommendationsContent");
 
 const articleMetaShell = document.getElementById("articleMetaShell");
 const articleMetaHeading = document.getElementById("articleMetaHeading");
@@ -59,6 +61,7 @@ let selectedArticleId = null;
 let paragraphDraftImages = [];
 let draggedParagraphId = null;
 let statisticsVisible = false;
+let recommendations = null;
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
@@ -112,6 +115,15 @@ function getValidationMessage(result) {
 function clearFeedback() {
   feedbackBanner.textContent = "";
   feedbackBanner.classList.add("hidden");
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function scrollToTop() {
@@ -214,12 +226,15 @@ function resetAuthenticatedState() {
   articles = [];
   selectedArticleId = null;
   statisticsVisible = false;
+  recommendations = null;
   userPanel.classList.add("hidden");
   logoutBtn.classList.add("hidden");
   loginForm.classList.remove("hidden");
   articleList.innerHTML = "";
   articleCounter.textContent = "0 articles";
   articleDetail.innerHTML = '<p class="detail-placeholder">Browse published articles or log in for more actions.</p>';
+  recommendationsContent.innerHTML = "";
+  recommendationsShell.classList.add("hidden");
   articleMetaShell.classList.add("hidden");
   paragraphShell.classList.add("hidden");
   statisticsShell.classList.add("hidden");
@@ -520,6 +535,86 @@ function renderStatistics(statistics) {
       </div>
     </div>
   `;
+}
+
+function renderRecommendations() {
+  if (currentUser?.role !== "User") {
+    recommendations = null;
+    recommendationsContent.innerHTML = "";
+    recommendationsShell.classList.add("hidden");
+    return;
+  }
+
+  const profileTerms = recommendations?.profileTerms || [];
+  const items = recommendations?.recommendations || [];
+
+  recommendationsShell.classList.remove("hidden");
+
+  if (!items.length) {
+    const fallbackMessage = profileTerms.length
+      ? "No unread suggestions right now. You already reacted to the closest matches."
+      : "Like a few finished articles and simple recommendations will appear here.";
+
+    recommendationsContent.innerHTML = `
+      <p class="recommendation-text">${fallbackMessage}</p>
+    `;
+    return;
+  }
+
+  recommendationsContent.innerHTML = `
+    <p class="recommendation-text">
+      Built from words in the articles you liked, especially from their titles.
+    </p>
+    <div class="recommendation-keywords">
+      ${
+        profileTerms.length
+          ? profileTerms.map((item) => `<span class="recommendation-pill">${escapeHtml(item.term)}</span>`).join("")
+          : ""
+      }
+    </div>
+    <div class="recommendation-list">
+      ${items
+        .map(
+          (item) => `
+            <button type="button" class="recommendation-card" data-recommendation-id="${item.id}">
+              <div class="article-card-top">
+                <div class="meta-pill">${escapeHtml(item.category || "Uncategorized")}</div>
+                <div class="recommendation-score">Score ${item.score}</div>
+              </div>
+              <h3 class="article-title">${escapeHtml(item.title || "Untitled article")}</h3>
+              <p class="article-summary">${escapeHtml(item.summary || "No summary yet.")}</p>
+              <div class="recommendation-match">
+                Matches: ${item.matchedTerms.length ? item.matchedTerms.map(escapeHtml).join(", ") : "general topic overlap"}
+              </div>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function loadRecommendations() {
+  if (currentUser?.role !== "User") {
+    recommendations = null;
+    renderRecommendations();
+    return;
+  }
+
+  recommendations = await apiRequest("/api/recommendations");
+  renderRecommendations();
+}
+
+async function openArticleById(articleId) {
+  const articleDetails = await apiRequest(`/api/articles/${articleId}`);
+  selectedArticleId = articleDetails.id;
+  renderList();
+  renderDetail(articleDetails);
+  attachDetailInteractions();
+  fillArticleMetaForm(articleDetails);
+  fillParagraphForm(null);
+  applyPermissions();
+  scrollToTop();
 }
 
 function renderParagraphCommentForm(paragraph) {
@@ -874,15 +969,7 @@ function renderList() {
 
     button.addEventListener("click", async () => {
       try {
-        const articleDetails = await apiRequest(`/api/articles/${article.id}`);
-        selectedArticleId = articleDetails.id;
-        renderList();
-        renderDetail(articleDetails);
-        attachDetailInteractions();
-        fillArticleMetaForm(articleDetails);
-        fillParagraphForm(null);
-        applyPermissions();
-        scrollToTop();
+        await openArticleById(article.id);
         clearFeedback();
       } catch (error) {
         showFeedback(error.message);
@@ -928,6 +1015,7 @@ async function loadArticles(preferredArticleId = null) {
     : results[0]?.id ?? null;
 
   renderList();
+  await loadRecommendations();
 
   if (!selectedArticleId) {
     renderDetail(null);
@@ -1034,6 +1122,20 @@ logoutBtn.addEventListener("click", async () => {
 
 statisticsBtn.addEventListener("click", async () => {
   await toggleStatistics();
+});
+
+recommendationsContent.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-recommendation-id]");
+  if (!button) {
+    return;
+  }
+
+  try {
+    await openArticleById(button.dataset.recommendationId);
+    clearFeedback();
+  } catch (error) {
+    showFeedback(error.message);
+  }
 });
 
 createArticleShortcutBtn.addEventListener("click", () => {

@@ -94,6 +94,57 @@ test("GET /api/articles allows guest access to finished articles with reaction t
   assert.equal(response.body[0].userReaction, "none");
 });
 
+test("GET /api/recommendations returns simple content-based suggestions for readers", async () => {
+  const token = signToken({ sub: "20", username: "user", role: "User", displayName: "Reader User" });
+
+  Article.find = (filter) => {
+    assert.deepEqual(filter, { status: "finished" });
+    return createSortLeanResult([
+      {
+        _id: { toString: () => "liked-1" },
+        title: "Campus research festival",
+        category: "Campus",
+        summary: "Research students and festival projects across UBB.",
+        status: "finished",
+        likedByUserIds: ["20"],
+        dislikedByUserIds: [],
+        paragraphs: [{ text: "Research stories and campus innovation." }],
+      },
+      {
+        _id: { toString: () => "candidate-1" },
+        title: "Research ideas for the campus community",
+        category: "Campus",
+        summary: "Fresh research events for students.",
+        status: "finished",
+        likedByUserIds: ["11"],
+        dislikedByUserIds: [],
+        paragraphs: [{ text: "Community research fair." }],
+      },
+      {
+        _id: { toString: () => "candidate-2" },
+        title: "Sports day highlights",
+        category: "Sports",
+        summary: "Team results and scores.",
+        status: "finished",
+        likedByUserIds: [],
+        dislikedByUserIds: ["20"],
+        paragraphs: [{ text: "Athletes and matches." }],
+      },
+    ]);
+  };
+
+  const app = createApp();
+  const response = await request(app)
+    .get("/api/recommendations")
+    .set("Authorization", `Bearer ${token}`);
+
+  assert.equal(response.status, 200);
+  assert.ok(response.body.profileTerms.length > 0);
+  assert.equal(response.body.recommendations.length, 1);
+  assert.equal(response.body.recommendations[0].id, "candidate-1");
+  assert.ok(response.body.recommendations[0].matchedTerms.includes("research"));
+});
+
 test("POST /api/articles rejects invalid editor payload", async () => {
   const token = signToken({ sub: "2", username: "editor", role: "Editor", displayName: "Editor User" });
   const app = createApp();
