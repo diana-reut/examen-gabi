@@ -56,6 +56,15 @@ body.role-user { --bg:#eef9ee; --bg-secondary:#f7fff7; --role-tint:rgba(40,140,5
 .login-form, .article-form, .field-row { display:grid; gap:16px; }
 .field-row { grid-template-columns:repeat(2, minmax(0, 1fr)); }
 .user-panel { margin-top:16px; padding:16px; border-radius:18px; background:var(--accent-soft); }
+.banned-notice {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(159, 47, 47, 0.12);
+  border: 1px solid rgba(159, 47, 47, 0.22);
+  color: #9f2f2f;
+  font-weight: 700;
+}
 .user-badge-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .role-badge, .meta-pill, .count-badge, .status-pill {
   display:inline-flex; align-items:center; padding:8px 12px; border-radius:999px; background:rgba(20,35,59,.08); color:var(--ink); font-weight:700;

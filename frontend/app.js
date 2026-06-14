@@ -6,6 +6,7 @@ const userPanel = document.getElementById("userPanel");
 const roleBadge = document.getElementById("roleBadge");
 const userIdentity = document.getElementById("userIdentity");
 const permissionSummary = document.getElementById("permissionSummary");
+const bannedNotice = document.getElementById("bannedNotice");
 
 const articleList = document.getElementById("articleList");
 const articleDetail = document.getElementById("articleDetail");
@@ -62,6 +63,7 @@ let paragraphDraftImages = [];
 let draggedParagraphId = null;
 let statisticsVisible = false;
 let recommendations = null;
+let bannedUsers = [];
 
 async function apiRequest(path, options = {}) {
   const response = await fetch(path, {
@@ -171,6 +173,10 @@ function describeRole() {
     return "Guests can browse finished articles and see like/dislike totals, but they cannot react until they log in.";
   }
 
+  if (currentUser.isBanned) {
+    return `This account is banned as ${currentUser.banType || "banned user"}. It can only view the app now.`;
+  }
+
   if (currentUser.role === "Admin") {
     return "Admins can manage article metadata, paragraphs, images, comments, deletion, and article statistics.";
   }
@@ -192,6 +198,10 @@ function setAuthenticatedState(user, permissions) {
   roleBadge.textContent = user.role;
   userIdentity.textContent = `${user.displayName} (${user.username})`;
   permissionSummary.textContent = describeRole();
+  bannedNotice.textContent = user.isBanned
+    ? `This account is banned automatically as ${user.banType}.`
+    : "";
+  bannedNotice.classList.toggle("hidden", !user.isBanned);
   userPanel.classList.remove("hidden");
   logoutBtn.classList.remove("hidden");
   loginForm.classList.add("hidden");
@@ -227,7 +237,10 @@ function resetAuthenticatedState() {
   selectedArticleId = null;
   statisticsVisible = false;
   recommendations = null;
+  bannedUsers = [];
   userPanel.classList.add("hidden");
+  bannedNotice.textContent = "";
+  bannedNotice.classList.add("hidden");
   logoutBtn.classList.add("hidden");
   loginForm.classList.remove("hidden");
   articleList.innerHTML = "";
@@ -376,7 +389,7 @@ function countUnresolvedComments(article) {
 
 function renderReactionSummary(article) {
   const isUser = currentUser?.role === "User";
-  const canReact = isUser && article.status === "finished";
+  const canReact = isUser && !currentUser?.isBanned && article.status === "finished";
 
   return `
     <div class="reaction-strip">
@@ -432,11 +445,53 @@ function renderArticleComments(article) {
     <section class="article-comments-shell">
       <div class="detail-assignees"><strong>Article comments</strong></div>
       <div class="comments-list">${commentsHtml}</div>
-      <form class="article-comment-form">
-        <textarea name="articleCommentText" rows="3" maxlength="${validation.limits.comment}" placeholder="Add a comment for this article..."></textarea>
-        <button class="secondary-button" type="submit">Add article comment</button>
-      </form>
+      ${
+        currentUser.isBanned
+          ? '<p class="workflow-warning">This account is banned and can no longer post comments.</p>'
+          : `
+            <form class="article-comment-form">
+              <textarea name="articleCommentText" rows="3" maxlength="${validation.limits.comment}" placeholder="Add a comment for this article..."></textarea>
+              <button class="secondary-button" type="submit">Add article comment</button>
+            </form>
+          `
+      }
     </section>
+  `;
+}
+
+function renderBannedUsers() {
+  if (!bannedUsers.length) {
+    return `
+      <div class="stats-card stats-card-wide">
+        <h3>Banned users</h3>
+        <p class="empty-inline">No banned users right now.</p>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="stats-card stats-card-wide">
+      <h3>Banned users</h3>
+      <div class="stats-list">
+        ${bannedUsers
+          .map(
+            (user) => `
+              <div class="stats-row">
+                <div>
+                  <strong>${escapeHtml(user.displayName)}</strong>
+                  <div class="stats-subline">${escapeHtml(user.username)} · ${escapeHtml(user.role)}</div>
+                  <div class="stats-subline">Automatic ban type: <strong>${escapeHtml(user.banType || "unknown")}</strong></div>
+                </div>
+                <div class="stats-metrics">
+                  <span class="comment-status negative">${escapeHtml(user.banType || "banned")}</span>
+                  <span>${user.bannedAt ? formatDate(user.bannedAt) : "Unknown date"}</span>
+                </div>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
   `;
 }
 
@@ -533,6 +588,7 @@ function renderStatistics(statistics) {
         <h3>All finished articles</h3>
         ${renderRows(statistics.articles)}
       </div>
+      ${renderBannedUsers()}
     </div>
   `;
 }
@@ -595,7 +651,7 @@ function renderRecommendations() {
 }
 
 async function loadRecommendations() {
-  if (currentUser?.role !== "User") {
+  if (currentUser?.role !== "User" || currentUser?.isBanned) {
     recommendations = null;
     renderRecommendations();
     return;
@@ -994,13 +1050,18 @@ async function toggleStatistics() {
   }
 
   try {
-    const statistics = await apiRequest("/api/statistics/articles");
+    const [statistics, bannedUsersPayload] = await Promise.all([
+      apiRequest("/api/statistics/articles"),
+      apiRequest("/api/admin/banned-users"),
+    ]);
+    bannedUsers = bannedUsersPayload;
     renderStatistics(statistics);
     statisticsShell.classList.remove("hidden");
     statisticsBtn.textContent = "Hide statistics";
     statisticsShell.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     statisticsVisible = false;
+    bannedUsers = [];
     statisticsShell.classList.add("hidden");
     statisticsBtn.textContent = "See statistics";
     showFeedback(error.message);
@@ -1074,6 +1135,9 @@ async function restoreSession() {
     resetForms();
     await loadArticles();
     clearFeedback();
+    if (payload.user.isBanned) {
+      showFeedback(`This account is banned as ${payload.user.banType}. It can only view the app.`);
+    }
   } catch {
     await enterGuestMode();
   }
@@ -1110,6 +1174,9 @@ loginForm.addEventListener("submit", async (event) => {
     await loadArticles();
     loginForm.reset();
     clearFeedback();
+    if (payload.user.isBanned) {
+      showFeedback(`This account is banned as ${payload.user.banType}. It can only view the app.`);
+    }
   } catch (error) {
     showFeedback(error.message);
   }

@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const jwt = require("jsonwebtoken");
 const request = require("supertest");
-const { createApp, Article, postgresPool } = require("../server");
+const { createApp, Article, postgresPool, buildModerationDecision, runAsyncModerationScan } = require("../server");
 
 const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-production";
 
@@ -17,6 +17,29 @@ function createSortLeanResult(data) {
         lean: async () => data,
       };
     },
+  };
+}
+
+function mockAuthenticatedUser(user) {
+  postgresPool.query = async (query, params = []) => {
+    if (String(query).includes("FROM users WHERE id = $1")) {
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: Number(user.id),
+            username: user.username,
+            role: user.role,
+            display_name: user.display_name,
+            is_banned: user.is_banned ?? false,
+            ban_type: user.ban_type ?? "",
+            banned_at: user.banned_at ?? null,
+          },
+        ],
+      };
+    }
+
+    return { rowCount: 0, rows: [] };
   };
 }
 
@@ -96,6 +119,7 @@ test("GET /api/articles allows guest access to finished articles with reaction t
 
 test("GET /api/recommendations returns simple content-based suggestions for readers", async () => {
   const token = signToken({ sub: "20", username: "user", role: "User", displayName: "Reader User" });
+  mockAuthenticatedUser({ id: 20, username: "user", role: "User", display_name: "Reader User" });
 
   Article.find = (filter) => {
     assert.deepEqual(filter, { status: "finished" });
@@ -147,6 +171,7 @@ test("GET /api/recommendations returns simple content-based suggestions for read
 
 test("POST /api/articles rejects invalid editor payload", async () => {
   const token = signToken({ sub: "2", username: "editor", role: "Editor", displayName: "Editor User" });
+  mockAuthenticatedUser({ id: 2, username: "editor", role: "Editor", display_name: "Editor User" });
   const app = createApp();
 
   const response = await request(app)
@@ -164,6 +189,7 @@ test("POST /api/articles rejects invalid editor payload", async () => {
 
 test("PATCH /api/articles/:id/reaction rejects invalid reactions", async () => {
   const token = signToken({ sub: "20", username: "user", role: "User", displayName: "Reader User" });
+  mockAuthenticatedUser({ id: 20, username: "user", role: "User", display_name: "Reader User" });
 
   Article.findById = async () => ({
     _id: { toString: () => "article-2" },
@@ -186,6 +212,7 @@ test("PATCH /api/articles/:id/reaction rejects invalid reactions", async () => {
 
 test("POST /api/articles/:id/comments allows logged-in viewers to add article comments", async () => {
   const token = signToken({ sub: "20", username: "user", role: "User", displayName: "Reader User" });
+  mockAuthenticatedUser({ id: 20, username: "user", role: "User", display_name: "Reader User" });
   const saveCalls = [];
   const article = {
     _id: { toString: () => "article-4" },
@@ -208,6 +235,9 @@ test("POST /api/articles/:id/comments allows logged-in viewers to add article co
   };
 
   Article.findById = async () => article;
+  Article.find = () => ({
+    lean: async () => [],
+  });
 
   const app = createApp();
   const response = await request(app)
@@ -267,6 +297,7 @@ test("GET /api/articles/:id hides article comments from guests", async () => {
 
 test("POST /api/articles/:id/paragraphs rejects empty paragraph text", async () => {
   const token = signToken({ sub: "7", username: "journalist2", role: "Journalist", displayName: "Ana Journalist" });
+  mockAuthenticatedUser({ id: 7, username: "journalist2", role: "Journalist", display_name: "Ana Journalist" });
 
   Article.findById = async () => ({
     _id: { toString: () => "article-3" },
@@ -286,6 +317,7 @@ test("POST /api/articles/:id/paragraphs rejects empty paragraph text", async () 
 
 test("GET /api/statistics/articles only counts finished articles", async () => {
   const token = signToken({ sub: "1", username: "admin", role: "Admin", displayName: "Admin User" });
+  mockAuthenticatedUser({ id: 1, username: "admin", role: "Admin", display_name: "Admin User" });
 
   Article.find = () =>
     createSortLeanResult([
@@ -318,4 +350,145 @@ test("GET /api/statistics/articles only counts finished articles", async () => {
   assert.equal(response.body.totals.dislikes, 1);
   assert.equal(response.body.articles.length, 1);
   assert.equal(response.body.articles[0].title, "Finished");
+});
+
+test("POST /api/articles/:id/comments still saves comments before async moderation runs", async () => {
+  const token = signToken({ sub: "20", username: "user", role: "User", displayName: "Reader User" });
+  mockAuthenticatedUser({ id: 20, username: "user", role: "User", display_name: "Reader User" });
+  const saveCalls = [];
+  const article = {
+    _id: { toString: () => "article-6" },
+    status: "finished",
+    articleComments: [],
+    assignedJournalistIds: ["7"],
+    createdByUserId: "2",
+    save: async () => {
+      saveCalls.push("saved");
+    },
+  };
+
+  article.articleComments.push = function push(comment) {
+    Array.prototype.push.call(this, {
+      _id: { toString: () => "comment-6" },
+      ...comment,
+    });
+    return this.length;
+  };
+
+  Article.findById = async () => article;
+
+  const app = createApp();
+  const response = await request(app)
+    .post("/api/articles/article-6/comments")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ text: "Esti prost." });
+
+  assert.equal(response.status, 201);
+  assert.equal(saveCalls.length, 1);
+});
+
+test("GET /api/admin/banned-users returns postac and hater users for admin", async () => {
+  const token = signToken({ sub: "1", username: "admin", role: "Admin", displayName: "Admin User" });
+  postgresPool.query = async (query) => {
+    if (String(query).includes("FROM users WHERE id = $1")) {
+      return {
+        rowCount: 1,
+        rows: [{
+          id: 1,
+          username: "admin",
+          role: "Admin",
+          display_name: "Admin User",
+          is_banned: false,
+          ban_type: "",
+          banned_at: null,
+        }],
+      };
+    }
+
+    if (String(query).includes("WHERE is_banned = TRUE")) {
+      return {
+        rowCount: 2,
+        rows: [
+          { id: 20, username: "user", role: "User", display_name: "Reader User", is_banned: true, ban_type: "hater", banned_at: new Date("2026-06-13") },
+          { id: 21, username: "user2", role: "User", display_name: "Bianca Reader", is_banned: true, ban_type: "postac", banned_at: new Date("2026-06-12") },
+        ],
+      };
+    }
+
+    return { rowCount: 0, rows: [] };
+  };
+
+  const app = createApp();
+  const response = await request(app)
+    .get("/api/admin/banned-users")
+    .set("Authorization", `Bearer ${token}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.length, 2);
+  assert.deepEqual(response.body.map((user) => user.banType), ["hater", "postac"]);
+});
+
+test("buildModerationDecision detects hater comments with a stronger score", () => {
+  const comments = [
+    { text: "Esti prost si idiot.", createdAt: new Date("2026-06-13T10:00:00Z") },
+    { text: "Comentariu normal.", createdAt: new Date("2026-06-13T10:02:00Z") },
+  ];
+
+  const decision = buildModerationDecision(comments, new Date("2026-06-13T10:03:00Z").getTime());
+
+  assert.equal(decision.shouldBan, true);
+  assert.equal(decision.banType, "hater");
+  assert.ok(decision.scores.haterScore >= 4);
+});
+
+test("runAsyncModerationScan bans postac users based on burst and repetition", async () => {
+  const queries = [];
+  postgresPool.query = async (query, params = []) => {
+    queries.push({ query: String(query), params });
+
+    if (String(query).includes("WHERE role = 'User' AND is_banned = FALSE")) {
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: 20,
+            username: "user",
+            role: "User",
+            display_name: "Reader User",
+            is_banned: false,
+            ban_type: "",
+            banned_at: null,
+          },
+        ],
+      };
+    }
+
+    if (String(query).includes("UPDATE users SET is_banned = TRUE")) {
+      return { rowCount: 1, rows: [] };
+    }
+
+    return { rowCount: 0, rows: [] };
+  };
+
+  Article.find = (filter) => {
+    assert.deepEqual(filter, { "articleComments.authorId": "20" });
+    return {
+      lean: async () => [
+        {
+          articleComments: [
+            { authorId: "20", text: "Aceeasi idee", createdAt: new Date("2026-06-13T10:00:00Z") },
+            { authorId: "20", text: "Aceeasi idee", createdAt: new Date("2026-06-13T10:00:15Z") },
+            { authorId: "20", text: "Aceeasi idee", createdAt: new Date("2026-06-13T10:00:30Z") },
+            { authorId: "20", text: "Aceeasi idee", createdAt: new Date("2026-06-13T10:00:45Z") },
+          ],
+        },
+      ],
+    };
+  };
+
+  const bans = await runAsyncModerationScan(new Date("2026-06-13T10:01:00Z").getTime());
+
+  assert.equal(bans.length, 1);
+  assert.equal(bans[0].banType, "postac");
+  assert.ok(queries.some((entry) => entry.query.includes("UPDATE users SET is_banned = TRUE") && entry.params[1] === "postac"));
 });

@@ -35,6 +35,7 @@ const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || "";
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || "";
 const CLOUDINARY_FOLDER = process.env.CLOUDINARY_FOLDER || "teoria-transpiratiei";
+const MODERATION_SCAN_INTERVAL_MS = Number(process.env.MODERATION_SCAN_INTERVAL_MS) || 30000;
 
 if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
   cloudinary.config({
@@ -198,6 +199,9 @@ function serializeUser(user) {
     username: user.username,
     role: user.role,
     displayName: user.displayName || user.display_name,
+    isBanned: Boolean(user.isBanned ?? user.is_banned),
+    banType: user.banType || user.ban_type || "",
+    bannedAt: user.bannedAt || user.banned_at ? new Date(user.bannedAt || user.banned_at).toISOString() : null,
   };
 }
 
@@ -462,7 +466,29 @@ function validateFinishedArticle(article) {
   return null;
 }
 
-function authenticateRequest(req, res, next) {
+async function getAuthUserById(userId) {
+  const result = await postgresPool.query(
+    "SELECT id, username, role, display_name, is_banned, ban_type, banned_at FROM users WHERE id = $1",
+    [Number(userId)],
+  );
+
+  const user = result.rows[0];
+  if (!user) {
+    return null;
+  }
+
+  return {
+    sub: String(user.id),
+    username: user.username,
+    role: user.role,
+    displayName: user.display_name,
+    isBanned: Boolean(user.is_banned),
+    banType: user.ban_type || "",
+    bannedAt: user.banned_at || null,
+  };
+}
+
+async function authenticateRequest(req, res, next) {
   const authorization = req.headers.authorization || "";
   const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
 
@@ -472,14 +498,21 @@ function authenticateRequest(req, res, next) {
   }
 
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const authUser = await getAuthUserById(decoded.sub);
+    if (!authUser) {
+      res.status(401).json({ message: "The user for this session no longer exists." });
+      return;
+    }
+
+    req.user = authUser;
     next();
   } catch (_error) {
     res.status(401).json({ message: "Invalid or expired token." });
   }
 }
 
-function authenticateRequestIfPresent(req, res, next) {
+async function authenticateRequestIfPresent(req, res, next) {
   const authorization = req.headers.authorization || "";
   const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
 
@@ -490,7 +523,13 @@ function authenticateRequestIfPresent(req, res, next) {
   }
 
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = await getAuthUserById(decoded.sub);
+    if (!req.user) {
+      res.status(401).json({ message: "The user for this session no longer exists." });
+      return;
+    }
+
     next();
   } catch {
     res.status(401).json({ message: "Invalid or expired token." });
@@ -578,6 +617,251 @@ function canCommentOnArticle(article, user) {
   return Boolean(user) && canViewArticle(article, user);
 }
 
+const vulgarTerms = [
+  "prost",
+  "proasta",
+  "idiot",
+  "idioata",
+  "imbecil",
+  "cretin",
+  "cretina",
+  "bou",
+  "nesimtit",
+  "nesimtita",
+  "stupid",
+  "stupida",
+  "dracu",
+  "naiba",
+  "fuck",
+  "shit",
+  "bitch",
+  "asshole",
+  "muie",
+  "pula",
+  "pizda",
+];
+
+const POSTAC_WINDOW_MS = 60 * 1000;
+const POSTAC_MAX_RECENT_COMMENTS = 3;
+const POSTAC_RECENT_WINDOW_MS = 5 * 60 * 1000;
+let moderationScanInterval = null;
+let moderationScanInFlight = false;
+
+function normalizeModerationText(text) {
+  return validation.normalizeString(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function containsVulgarLanguage(text) {
+  const normalizedText = normalizeModerationText(text);
+  return vulgarTerms.some((term) => normalizedText.includes(term));
+}
+
+function countVulgarMatches(text) {
+  const normalizedText = normalizeModerationText(text);
+  return vulgarTerms.reduce((count, term) => count + (normalizedText.includes(term) ? 1 : 0), 0);
+}
+
+async function listUserArticleComments(userId) {
+  const articles = await Article.find({ "articleComments.authorId": String(userId) }).lean();
+  return articles
+    .flatMap((article) => article.articleComments || [])
+    .filter((comment) => String(comment.authorId) === String(userId));
+}
+
+async function listActiveReaderUsers() {
+  const result = await postgresPool.query(
+    "SELECT id, username, role, display_name, is_banned, ban_type, banned_at FROM users WHERE role = 'User' AND is_banned = FALSE ORDER BY id ASC",
+  );
+
+  return result.rows.map((user) => ({
+    id: String(user.id),
+    username: user.username,
+    role: user.role,
+    displayName: user.display_name,
+    isBanned: Boolean(user.is_banned),
+    banType: user.ban_type || "",
+    bannedAt: user.banned_at || null,
+  }));
+}
+
+async function banUser(userId, banType) {
+  await postgresPool.query(
+    "UPDATE users SET is_banned = TRUE, ban_type = $2, banned_at = NOW() WHERE id = $1",
+    [Number(userId), banType],
+  );
+}
+
+function computeMaxBurstCount(timestamps, windowMs) {
+  let left = 0;
+  let maxCount = 0;
+
+  for (let right = 0; right < timestamps.length; right += 1) {
+    while (timestamps[right] - timestamps[left] > windowMs) {
+      left += 1;
+    }
+
+    maxCount = Math.max(maxCount, right - left + 1);
+  }
+
+  return maxCount;
+}
+
+function countRepeatedComments(comments) {
+  const textCounts = new Map();
+
+  for (const comment of comments) {
+    const normalizedText = normalizeModerationText(comment.text);
+    if (!normalizedText) {
+      continue;
+    }
+
+    textCounts.set(normalizedText, (textCounts.get(normalizedText) || 0) + 1);
+  }
+
+  return [...textCounts.values()].reduce((count, value) => count + Math.max(0, value - 1), 0);
+}
+
+function buildModerationDecision(comments, now = Date.now()) {
+  const timestamps = comments
+    .map((comment) => (comment.createdAt ? new Date(comment.createdAt).getTime() : 0))
+    .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0)
+    .sort((left, right) => left - right);
+
+  const recentComments = comments.filter((comment) => {
+    const createdAt = comment.createdAt ? new Date(comment.createdAt).getTime() : 0;
+    return createdAt >= now - POSTAC_RECENT_WINDOW_MS;
+  });
+
+  const vulgarCommentCount = comments.filter((comment) => countVulgarMatches(comment.text) > 0).length;
+  const vulgarMatchCount = comments.reduce((count, comment) => count + countVulgarMatches(comment.text), 0);
+  const maxBurst = computeMaxBurstCount(timestamps, POSTAC_WINDOW_MS);
+  const repeatedCommentCount = countRepeatedComments(recentComments);
+  const recentCommentCount = recentComments.length;
+  const postacScore = maxBurst * 2 + recentCommentCount + repeatedCommentCount * 2;
+  const haterScore = vulgarCommentCount * 3 + vulgarMatchCount;
+
+  if (haterScore >= 4) {
+    return {
+      shouldBan: true,
+      banType: "hater",
+      scores: {
+        haterScore,
+        postacScore,
+        vulgarCommentCount,
+        vulgarMatchCount,
+        maxBurst,
+        repeatedCommentCount,
+        recentCommentCount,
+      },
+    };
+  }
+
+  if (maxBurst > POSTAC_MAX_RECENT_COMMENTS || postacScore >= 10) {
+    return {
+      shouldBan: true,
+      banType: "postac",
+      scores: {
+        haterScore,
+        postacScore,
+        vulgarCommentCount,
+        vulgarMatchCount,
+        maxBurst,
+        repeatedCommentCount,
+        recentCommentCount,
+      },
+    };
+  }
+
+  return {
+    shouldBan: false,
+    banType: "",
+    scores: {
+      haterScore,
+      postacScore,
+      vulgarCommentCount,
+      vulgarMatchCount,
+      maxBurst,
+      repeatedCommentCount,
+      recentCommentCount,
+    },
+  };
+}
+
+async function runAsyncModerationScan(now = Date.now()) {
+  const activeReaders = await listActiveReaderUsers();
+  const bans = [];
+
+  for (const user of activeReaders) {
+    const comments = await listUserArticleComments(user.id);
+    if (!comments.length) {
+      continue;
+    }
+
+    const decision = buildModerationDecision(comments, now);
+    if (!decision.shouldBan) {
+      continue;
+    }
+
+    await banUser(user.id, decision.banType);
+    bans.push({
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      banType: decision.banType,
+      scores: decision.scores,
+    });
+  }
+
+  return bans;
+}
+
+function queueModerationScan() {
+  if (moderationScanInFlight) {
+    return;
+  }
+
+  moderationScanInFlight = true;
+  runAsyncModerationScan()
+    .then((bans) => {
+      if (bans.length) {
+        console.log("Async moderation bans:");
+        bans.forEach((ban) => console.log(`  ${ban.username} -> ${ban.banType}`));
+      }
+    })
+    .catch((error) => {
+      console.error("Async moderation scan failed.");
+      console.error(error);
+    })
+    .finally(() => {
+      moderationScanInFlight = false;
+    });
+}
+
+function startModerationScanner() {
+  if (moderationScanInterval) {
+    return moderationScanInterval;
+  }
+
+  moderationScanInterval = setInterval(queueModerationScan, MODERATION_SCAN_INTERVAL_MS);
+  moderationScanInterval.unref?.();
+  return moderationScanInterval;
+}
+
+function rejectBannedUser(req, res, next) {
+  if (req.user?.isBanned) {
+    res.status(403).json({
+      message: `Your account is banned as ${req.user.banType || "banned user"}.`,
+      banType: req.user.banType || "",
+    });
+    return;
+  }
+
+  next();
+}
+
 async function ensurePostgresSchema() {
   await postgresPool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -589,6 +873,10 @@ async function ensurePostgresSchema() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     )
   `);
+
+  await postgresPool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT FALSE");
+  await postgresPool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_type VARCHAR(20) NOT NULL DEFAULT ''");
+  await postgresPool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMP NULL");
 }
 
 async function ensureSeedUsers() {
@@ -1072,7 +1360,7 @@ function createApp() {
     }
 
     const result = await postgresPool.query(
-      "SELECT id, username, password_hash, role, display_name FROM users WHERE username = $1",
+      "SELECT id, username, password_hash, role, display_name, is_banned, ban_type, banned_at FROM users WHERE username = $1",
       [username],
     );
 
@@ -1093,6 +1381,9 @@ function createApp() {
       username: user.username,
       role: user.role,
       displayName: user.display_name,
+      isBanned: Boolean(user.is_banned),
+      banType: user.ban_type || "",
+      bannedAt: user.banned_at || null,
     };
 
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "12h" });
@@ -1112,6 +1403,32 @@ function createApp() {
 
   app.get("/api/journalists", authenticateRequest, requireCapability("canManageArticle"), async (_req, res) => {
     res.json(await getUsersByRole("Journalist"));
+  });
+
+  app.get("/api/admin/banned-users", authenticateRequest, async (req, res) => {
+    if (req.user.role !== "Admin") {
+      res.status(403).json({ message: "Only admins can see banned users." });
+      return;
+    }
+
+    const result = await postgresPool.query(
+      `SELECT id, username, role, display_name, is_banned, ban_type, banned_at
+       FROM users
+       WHERE is_banned = TRUE
+       ORDER BY banned_at DESC NULLS LAST, display_name ASC`,
+    );
+
+    res.json(
+      result.rows.map((user) => ({
+        id: String(user.id),
+        username: user.username,
+        role: user.role,
+        displayName: user.display_name,
+        isBanned: Boolean(user.is_banned),
+        banType: user.ban_type || "",
+        bannedAt: user.banned_at ? new Date(user.banned_at).toISOString() : null,
+      })),
+    );
   });
 
   app.get("/api/statistics/articles", authenticateRequest, async (req, res) => {
@@ -1167,7 +1484,7 @@ function createApp() {
     res.json(serializeArticleDocument(article, directory, req.user, { includeCommentSentiment: true }));
   });
 
-  app.post("/api/articles/:id/comments", authenticateRequest, async (req, res) => {
+  app.post("/api/articles/:id/comments", authenticateRequest, rejectBannedUser, async (req, res) => {
     const article = await Article.findById(req.params.id);
 
     if (!article) {
@@ -1211,7 +1528,7 @@ function createApp() {
     });
   });
 
-  app.patch("/api/articles/:id/reaction", authenticateRequest, async (req, res) => {
+  app.patch("/api/articles/:id/reaction", authenticateRequest, rejectBannedUser, async (req, res) => {
     if (req.user.role !== "User") {
       res.status(403).json({ message: "Only users can like or dislike articles." });
       return;
@@ -1725,6 +2042,8 @@ async function startServer() {
   console.log("Using PostgreSQL for users/auth, MongoDB for articles, and Cloudinary for images.");
   console.log("Seeded users:");
   seededUsers.forEach((user) => console.log(`  ${user.username} / ${user.password} (${user.role})`));
+  startModerationScanner();
+  console.log(`Async moderation scanner running every ${MODERATION_SCAN_INTERVAL_MS} ms.`);
 
   return { app, httpServer, httpsServer };
 }
@@ -1737,6 +2056,8 @@ module.exports = {
   seededUsers,
   buildArticleStatistics,
   buildSimpleContentRecommendations,
+  buildModerationDecision,
+  runAsyncModerationScan,
   validateArticleCreatePayload,
   validateArticleManagePayload,
   validateParagraphPayload,
